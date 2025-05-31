@@ -1,0 +1,8 @@
+# To install on Raspberry Pi:
+# sudo apt update && sudo apt install python3-pip python3-dev ffmpeg -y
+# pip3 install -r requirements.txt
+
+reolinkapi
+boto3
+python-telegram-bot
+python-dotenv 
