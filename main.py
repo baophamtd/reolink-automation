@@ -1,13 +1,19 @@
 import os
 from dotenv import load_dotenv
 import json
-from datetime import datetime, timedelta
+from datetime import datetime
 from reolinkapi import Camera
 import urllib3
 import requests
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 import argparse
+from telegram import Bot
+import asyncio
+import time
+
+# WORKING DEBUG VERSION: Fetches and downloads all motion files for today (midnight to now) for all channels (0-3), 'main' stream only.
+# Use this as a reference point for a known good state.
 
 # Load environment variables from .env file
 load_dotenv()
@@ -16,7 +22,6 @@ load_dotenv()
 REOLINK_HOST = os.getenv('REOLINK_HOST')
 REOLINK_USER = os.getenv('REOLINK_USER')
 REOLINK_PASSWORD = os.getenv('REOLINK_PASSWORD')
-REOLINK_CHANNEL = 2  # Channel 2 based on file naming convention (RecM02)
 
 # AWS S3 config
 AWS_ACCESS_KEY_ID = os.getenv('AWS_ACCESS_KEY_ID')
@@ -105,8 +110,14 @@ def upload_to_s3(filepath, bucket, aws_region=None):
         return None
 
 def send_telegram_message(message):
-    # TODO: Implement Telegram notification
-    pass
+    async def _send():
+        try:
+            bot = Bot(token=TELEGRAM_BOT_TOKEN)
+            await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+            print("Telegram notification sent.")
+        except Exception as e:
+            print(f"Failed to send Telegram message: {e}")
+    asyncio.run(_send())
 
 def get_download_time_ranges():
     """Load and parse download time ranges from download_times.json for today."""
@@ -120,27 +131,25 @@ def get_download_time_ranges():
         result.append((start_dt, end_dt))
     return result
 
-def fetch_motion_files(start_dt, end_dt):
+def fetch_motion_files(cam, start_dt, end_dt, channel):
     """
-    Query available motion files from Reolink camera for the given time range on channel 0.
+    Query available motion files from Reolink camera for the given time range on the specified channel.
     Tries both streamtype 'main' (Clear) and 'sub' (Fluent).
     Returns a dict with results for each streamtype.
     """
     results = {}
     try:
-        cam = Camera(REOLINK_HOST, REOLINK_USER, REOLINK_PASSWORD, https=True, defer_login=True)
-        cam.login()
         for streamtype in ['main', 'sub']:
             motion_files = cam.get_motion_files(
                 start=start_dt,
                 end=end_dt,
-                channel=0,
+                channel=channel,
                 streamtype=streamtype
             )
-            print(f"Motion files from {start_dt} to {end_dt} | channel 0 | streamtype '{streamtype}': {motion_files}")
+            print(f"Motion files from {start_dt} to {end_dt} | channel {channel} | streamtype '{streamtype}': {motion_files}")
             results[streamtype] = motion_files
         if not any(results.values()):
-            print("No motion files found for channel 0.")
+            print(f"No motion files found for channel {channel}.")
     except Exception as e:
         print(f"Motion file search failed: {e}")
         return None
@@ -148,73 +157,238 @@ def fetch_motion_files(start_dt, end_dt):
 
 def process_date_range(start_date, end_date):
     """
-    For each day in the range [start_date, end_date], process all time ranges from download_times.json.
+    For each day in the range [start_date, end_date], fetch all motion files for the day (midnight to 23:59) for all channels, then filter by time windows before downloading.
     """
+    from datetime import datetime as dt, time as dttime
     current_date = start_date
     while current_date <= end_date:
+        start = dt.combine(current_date, dt.min.time())
+        end = dt.combine(current_date, dttime(23, 59, 59))
         print(f"\nProcessing date: {current_date.strftime('%Y-%m-%d')}")
-        time_ranges = []
-        for start_time, end_time in get_download_time_ranges():
-            start_dt = current_date.replace(hour=start_time.hour, minute=start_time.minute, second=0, microsecond=0)
-            end_dt = current_date.replace(hour=end_time.hour, minute=end_time.minute, second=0, microsecond=0)
-            time_ranges.append((start_dt, end_dt))
-        print(f"Found {len(time_ranges)} time ranges to process for {current_date.strftime('%Y-%m-%d')}.")
-        for start_dt, end_dt in time_ranges:
-            print(f"\nProcessing time range: {start_dt} to {end_dt}")
-            results = fetch_motion_files(start_dt, end_dt)
-            if results:
-                files_to_download = []
-                for streamtype in ['main', 'sub']:
-                    files = results.get(streamtype, [])
-                    for file in files:
-                        files_to_download.append((file['filename'], file['start']))
-                if files_to_download:
-                    cam = Camera(REOLINK_HOST, REOLINK_USER, REOLINK_PASSWORD, https=True, defer_login=True)
-                    cam.login()
-                    for filename, file_start_time in files_to_download:
-                        output_filename = file_start_time.strftime("%Y-%m-%d %H-%M-%S") + ".mp4"
-                        if os.path.exists(output_filename):
-                            print(f"File {output_filename} already exists locally, skipping download.")
-                            continue
-                        print(f"Attempting to download: {filename} as {output_filename}")
-                        success = cam.get_file(
-                            filename=filename,
-                            output_path=output_filename,
-                            method="Playback"
-                        )
-                        if success:
-                            print(f"Download complete: {output_filename}")
-                            s3_url = upload_to_s3(output_filename, S3_BUCKET, AWS_DEFAULT_REGION)
-                            if s3_url:
-                                print(f"File available at: {s3_url}")
-                                os.remove(output_filename)
-                                print(f"Deleted local file: {output_filename}")
-                            else:
-                                print("Failed to upload to S3.")
-                        else:
-                            print("Download failed.")
+        print(f"Fetching all motion files for {start} to {end}")
+        cam = Camera(REOLINK_HOST, REOLINK_USER, REOLINK_PASSWORD, https=True, defer_login=True)
+        cam.login()
+        all_motions = []
+        for channel in [0, 1, 2, 3]:
+            motions = cam.get_motion_files(start=start, end=end, streamtype='main', channel=channel)
+            print(f"Channel {channel} motions: {motions}")
+            for motion in motions:
+                motion['channel'] = channel  # Tag channel for later
+            all_motions += motions
+        cam.logout()
+
+        # Load time windows for the date
+        with open('download_times.json', 'r') as f:
+            time_ranges = json.load(f)
+        window_ranges = []
+        for tr in time_ranges:
+            win_start = dt.combine(current_date, dt.strptime(tr['start'], '%H:%M').time())
+            win_end = dt.combine(current_date, dt.strptime(tr['end'], '%H:%M').time())
+            window_ranges.append((win_start, win_end))
+
+        # Filter motions by time window
+        filtered_motions = []
+        for motion in all_motions:
+            mstart = motion['start']
+            for win_start, win_end in window_ranges:
+                if win_start <= mstart < win_end:
+                    filtered_motions.append(motion)
+                    break
+
+        print(f"Found {len(filtered_motions)} motion files in desired windows.")
+        for motion in filtered_motions:
+            fname = motion['filename']
+            channel = motion.get('channel', 'unknown')
+            mstart = motion['start']
+            output_filename = mstart.strftime("%Y-%m-%d %H-%M-%S") + f"_ch{channel}.mp4"
+            if not os.path.isfile(output_filename):
+                print(f"Downloading {fname} as {output_filename}")
+                cam = Camera(REOLINK_HOST, REOLINK_USER, REOLINK_PASSWORD, https=True, defer_login=True)
+                cam.login()
+                resp = cam.get_file(fname, output_path=output_filename)
+                cam.logout()
+                print(f"Downloaded to {output_filename}")
+                # Upload to S3
+                s3_url = upload_to_s3(output_filename, S3_BUCKET, AWS_DEFAULT_REGION)
+                if s3_url:
+                    print(f"Uploaded to S3: {s3_url}")
+                    os.remove(output_filename)
+                    print(f"Deleted local file: {output_filename}")
                 else:
-                    print("No motion files found to download in this range.")
+                    print("Failed to upload to S3.")
             else:
-                print("No motion files found in this range.")
+                print(f"File {output_filename} already exists, skipping download.")
         current_date += timedelta(days=1)
+
+def process_date_with_window_filter(target_date):
+    """
+    Fetch all motion files for the given date (midnight to 23:59) for all channels, then filter by time windows before downloading.
+    """
+    from datetime import datetime as dt, time as dttime
+    start = dt.combine(target_date, dt.min.time())
+    end = dt.combine(target_date, dttime(23, 59, 59))
+    print(f"\nProcessing date: {target_date.strftime('%Y-%m-%d')}")
+    print(f"Fetching all motion files for {start} to {end}")
+    cam = Camera(REOLINK_HOST, REOLINK_USER, REOLINK_PASSWORD, https=True, defer_login=True)
+    cam.login()
+    all_motions = []
+    for channel in [0, 1, 2, 3]:
+        motions = cam.get_motion_files(start=start, end=end, streamtype='main', channel=channel)
+        print(f"Channel {channel} motions: {motions}")
+        for motion in motions:
+            motion['channel'] = channel  # Tag channel for later
+        all_motions += motions
+    cam.logout()
+
+    # Load time windows for the date
+    with open('download_times.json', 'r') as f:
+        time_ranges = json.load(f)
+    window_ranges = []
+    for tr in time_ranges:
+        win_start = dt.combine(target_date, dt.strptime(tr['start'], '%H:%M').time())
+        win_end = dt.combine(target_date, dt.strptime(tr['end'], '%H:%M').time())
+        window_ranges.append((win_start, win_end))
+
+    # Filter motions by time window
+    filtered_motions = []
+    for motion in all_motions:
+        mstart = motion['start']
+        for win_start, win_end in window_ranges:
+            if win_start <= mstart < win_end:
+                filtered_motions.append(motion)
+                break
+
+    print(f"Found {len(filtered_motions)} motion files in desired windows.")
+    for motion in filtered_motions:
+        fname = motion['filename']
+        channel = motion.get('channel', 'unknown')
+        mstart = motion['start']
+        output_filename = mstart.strftime("%Y-%m-%d %H-%M-%S") + f"_ch{channel}.mp4"
+        if not os.path.isfile(output_filename):
+            print(f"Downloading {fname} as {output_filename}")
+            cam = Camera(REOLINK_HOST, REOLINK_USER, REOLINK_PASSWORD, https=True, defer_login=True)
+            cam.login()
+            resp = cam.get_file(fname, output_path=output_filename)
+            cam.logout()
+            print(f"Downloaded to {output_filename}")
+            # Upload to S3
+            s3_url = upload_to_s3(output_filename, S3_BUCKET, AWS_DEFAULT_REGION)
+            if s3_url:
+                print(f"Uploaded to S3: {s3_url}")
+                os.remove(output_filename)
+                print(f"Deleted local file: {output_filename}")
+            else:
+                print("Failed to upload to S3.")
+        else:
+            print(f"File {output_filename} already exists, skipping download.")
+
+def get_all_motion_files_for_date(target_date):
+    """
+    Fetches all motion files for the given date (midnight to 23:59:59) for channel 0, 'main' stream only.
+    Returns a list of motion dicts, each with 'filename', 'start', 'end', and channel info.
+    """
+    from datetime import datetime as dt, time as dttime
+    start = dt.combine(target_date, dttime(0, 0, 0))
+    end = dt.combine(target_date, dttime(23, 59, 59))
+    print(f"\nFetching all motion files for {target_date} from {start} to {end}")
+    cam = Camera(REOLINK_HOST, REOLINK_USER, REOLINK_PASSWORD, https=True, defer_login=True)
+    cam.login()
+    motions = cam.get_motion_files(start=start, end=end, streamtype='main', channel=0)
+    print(f"Channel 0 motions: {motions}")
+    for motion in motions:
+        motion['channel'] = 0
+    cam.logout()
+    return motions
+
+def filter_motions_by_time_windows(motions, target_date, time_windows):
+    """
+    Filter a list of motion dicts to only those whose 'start' time falls within any of the specified time windows.
+    time_windows: list of dicts with 'start' and 'end' in 'HH:MM' format.
+    """
+    from datetime import datetime as dt
+    window_ranges = []
+    for tr in time_windows:
+        win_start = dt.combine(target_date, dt.strptime(tr['start'], '%H:%M').time())
+        win_end = dt.combine(target_date, dt.strptime(tr['end'], '%H:%M').time())
+        window_ranges.append((win_start, win_end))
+    filtered = []
+    for motion in motions:
+        mstart = motion['start']
+        # Debug print for time types and values
+        print(f"DEBUG: motion['start']: {mstart} (type: {type(mstart)})")
+        for win_start, win_end in window_ranges:
+            print(f"DEBUG: window: {win_start} to {win_end} (types: {type(win_start)}, {type(win_end)})")
+            if win_start <= mstart < win_end:
+                filtered.append(motion)
+                break
+    return filtered
+
+def download_motion_files(motions):
+    for motion in motions:
+        fname = motion['filename']
+        channel = motion.get('channel', 'unknown')
+        mstart = motion['start']
+        output_filename = mstart.strftime("%Y-%m-%d %H-%M-%S") + f"_ch{channel}.mp4"
+        if not os.path.isfile(output_filename):
+            print(f"Downloading {fname} as {output_filename}")
+            cam = Camera(REOLINK_HOST, REOLINK_USER, REOLINK_PASSWORD, https=True, defer_login=True)
+            cam.login()
+            resp = cam.get_file(fname, output_path=output_filename)
+            cam.logout()
+            print(f"Downloaded to {output_filename}")
+            # Upload to S3
+            s3_url = upload_to_s3(output_filename, S3_BUCKET, AWS_DEFAULT_REGION)
+            if s3_url:
+                print(f"Uploaded to S3: {s3_url}")
+                os.remove(output_filename)
+                print(f"Deleted local file: {output_filename}")
+            else:
+                print("Failed to upload to S3.")
+        else:
+            print(f"File {output_filename} already exists, skipping download.")
 
 def main():
     # TODO: Implement main job logic
     pass
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Download and upload Reolink motion files for a date range.")
+    import argparse
+    from datetime import datetime as dt, timedelta
+    parser = argparse.ArgumentParser(description="Download and filter Reolink motion files by time windows.")
     parser.add_argument('--start', type=str, help='Start date (YYYY-MM-DD)', required=False)
     parser.add_argument('--end', type=str, help='End date (YYYY-MM-DD)', required=False)
     args = parser.parse_args()
 
+    # Load time windows from download_times.json
+    with open('download_times.json', 'r') as f:
+        time_windows = json.load(f)
+
     if args.start and args.end:
-        start_date = datetime.strptime(args.start, "%Y-%m-%d")
-        end_date = datetime.strptime(args.end, "%Y-%m-%d")
-        process_date_range(start_date, end_date)
+        start_date = dt.strptime(args.start, "%Y-%m-%d").date()
+        end_date = dt.strptime(args.end, "%Y-%m-%d").date()
+        if start_date == end_date:
+            print(f"\nProcessing {start_date}")
+            motions = get_all_motion_files_for_date(start_date)
+            filtered = filter_motions_by_time_windows(motions, start_date, time_windows)
+            print(f"Found {len(filtered)} motion files in desired windows for {start_date}.")
+            download_motion_files(filtered)
+        else:
+            current_date = start_date
+            while current_date <= end_date:
+                print(f"\nProcessing {current_date}")
+                motions = get_all_motion_files_for_date(current_date)
+                filtered = filter_motions_by_time_windows(motions, current_date, time_windows)
+                print(f"Found {len(filtered)} motion files in desired windows for {current_date}.")
+                download_motion_files(filtered)
+                current_date += timedelta(days=1)
+    elif args.start or args.end:
+        print("Error: You must specify BOTH --start and --end to use date range mode.")
+        exit(1)
     else:
-        # Default: process today
-        today = datetime.now()
-        process_date_range(today, today)
+        today = dt.now().date()
+        print(f"\nProcessing {today}")
+        motions = get_all_motion_files_for_date(today)
+        filtered = filter_motions_by_time_windows(motions, today, time_windows)
+        print(f"Found {len(filtered)} motion files in desired windows for today.")
+        download_motion_files(filtered)
     main() 

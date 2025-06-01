@@ -1,12 +1,12 @@
 # Reolink Automation
 
-This project automates downloading video clips from Reolink cameras, uploads them to AWS S3, and sends Telegram notifications on completion. It is designed for easy scheduling (e.g., via cron) and works well on a Raspberry Pi.
+This project automates downloading motion-triggered video clips from your Reolink camera (channel 0), uploads them to AWS S3, and cleans up local files. It is designed for easy scheduling (e.g., via cron) and works well on a Raspberry Pi.
 
 ## Features
-- Download motion-triggered video clips from Reolink cameras for specific time windows
+- Download all motion-triggered video clips for channel 0 for a given date or date range
+- Filter videos by configurable time windows (e.g., only download clips from 09:00–09:30, etc.)
 - Upload each video to AWS S3
 - Clean up local files after upload
-- Send a Telegram message on script completion (success or failure)
 - Easily configurable time windows and date ranges
 
 ## Setup
@@ -31,13 +31,10 @@ Create a `.env` file in the project root (see `.env.example` for template):
 REOLINK_HOST=192.168.1.100
 REOLINK_USER=your_username
 REOLINK_PASSWORD=your_password
-REOLINK_CHANNEL=0
 AWS_ACCESS_KEY_ID=your_aws_access_key_id
 AWS_SECRET_ACCESS_KEY=your_aws_secret_access_key
 AWS_DEFAULT_REGION=us-west-1
 S3_BUCKET=your_s3_bucket_name
-TELEGRAM_BOT_TOKEN=your_telegram_bot_token
-TELEGRAM_CHAT_ID=your_telegram_chat_id
 ```
 
 ### 4. Configure Download Time Windows
@@ -57,26 +54,31 @@ Edit `download_times.json` to specify the time windows you want to process each 
 ```bash
 python main.py
 ```
+- Fetches all motion files for today (channel 0), filters by your time windows, uploads to S3, and deletes local files.
 
 ### Run for a Specific Date Range
 ```bash
-python main.py --start 2024-05-20 --end 2024-05-25
+python main.py --start 2025-05-29 --end 2025-05-31
 ```
-
-- The script will process all time windows in `download_times.json` for each day in the range.
-- Each video will be uploaded to S3 and deleted locally after upload.
-- You will receive a Telegram notification when the script finishes.
+- Fetches all motion files for each day in the range (inclusive), filters by your time windows, uploads to S3, and deletes local files.
+- **Note:** You must specify BOTH `--start` and `--end` if you want to use date range mode. If only one is provided, the script will exit with an error.
+- If `--start` and `--end` are the same, the script will only fetch and filter once for that day.
 
 ### Example Cron Job (Run Every Day at 11:00pm)
-Edit your crontab with `crontab -e` and add:
-```
-0 23 * * * cd /home/pi/reolink-automation && /home/pi/reolink-automation/venv/bin/python main.py >> cron.log 2>&1
-```
+1. Make the script executable:
+   ```bash
+   chmod +x /home/pi/reolink-automation/run_reolink_motion.sh
+   ```
+2. Edit your crontab with `crontab -e` and add:
+   ```
+   0 23 * * * /home/pi/reolink-automation/run_reolink_motion.sh
+   ```
 
 ## Notes
 - Make sure your `.env` file is not committed to version control.
 - The script will skip files that already exist locally.
 - If you want to backfill historical data, use the `--start` and `--end` arguments.
+- Only channel 0 is processed. If you need other channels, modify the script accordingly.
 
 ---
 
