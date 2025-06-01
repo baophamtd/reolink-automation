@@ -323,19 +323,54 @@ def filter_motions_by_time_windows(motions, target_date, time_windows):
                 break
     return filtered
 
-def download_motion_files(motions):
+def s3_file_exists(bucket, key, aws_region=None):
+    s3 = boto3.client(
+        's3',
+        aws_access_key_id=AWS_ACCESS_KEY_ID,
+        aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+        region_name=aws_region or AWS_DEFAULT_REGION
+    )
+    try:
+        s3.head_object(Bucket=bucket, Key=key)
+        return True
+    except ClientError as e:
+        if e.response['Error']['Code'] == '404':
+            return False
+        else:
+            raise
+
+def download_motion_files(motions, max_retries=3, retry_delay=5):
     for motion in motions:
         fname = motion['filename']
         channel = motion.get('channel', 'unknown')
         mstart = motion['start']
         output_filename = mstart.strftime("%Y-%m-%d %H-%M-%S") + f"_ch{channel}.mp4"
+        s3_key = output_filename
+        if s3_file_exists(S3_BUCKET, s3_key, AWS_DEFAULT_REGION):
+            print(f"File {s3_key} already exists in S3, skipping download and upload.")
+            continue
         if not os.path.isfile(output_filename):
             print(f"Downloading {fname} as {output_filename}")
-            cam = Camera(REOLINK_HOST, REOLINK_USER, REOLINK_PASSWORD, https=True, defer_login=True)
-            cam.login()
-            resp = cam.get_file(fname, output_path=output_filename)
-            cam.logout()
-            print(f"Downloaded to {output_filename}")
+            attempt = 0
+            while attempt < max_retries:
+                try:
+                    cam = Camera(REOLINK_HOST, REOLINK_USER, REOLINK_PASSWORD, https=True, defer_login=True)
+                    cam.login()
+                    resp = cam.get_file(fname, output_path=output_filename)
+                    cam.logout()
+                    print(f"Downloaded to {output_filename}")
+                    break  # Success, exit retry loop
+                except requests.exceptions.ReadTimeout:
+                    attempt += 1
+                    print(f"Timeout while downloading {fname}. Retrying {attempt}/{max_retries} in {retry_delay}s...")
+                    time.sleep(retry_delay)
+                except Exception as e:
+                    attempt += 1
+                    print(f"Error while downloading {fname}: {e}. Retrying {attempt}/{max_retries} in {retry_delay}s...")
+                    time.sleep(retry_delay)
+            else:
+                print(f"Failed to download {fname} after {max_retries} attempts.")
+                continue  # Skip upload if download failed
             # Upload to S3
             s3_url = upload_to_s3(output_filename, S3_BUCKET, AWS_DEFAULT_REGION)
             if s3_url:
@@ -345,7 +380,7 @@ def download_motion_files(motions):
             else:
                 print("Failed to upload to S3.")
         else:
-            print(f"File {output_filename} already exists, skipping download.")
+            print(f"File {output_filename} already exists locally, skipping download.")
 
 def main():
     # TODO: Implement main job logic
