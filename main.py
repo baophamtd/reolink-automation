@@ -398,32 +398,37 @@ if __name__ == "__main__":
     with open('download_times.json', 'r') as f:
         time_windows = json.load(f)
 
-    if args.start and args.end:
-        start_date = dt.strptime(args.start, "%Y-%m-%d").date()
-        end_date = dt.strptime(args.end, "%Y-%m-%d").date()
-        if start_date == end_date:
-            print(f"\nProcessing {start_date}")
-            motions = get_all_motion_files_for_date(start_date)
-            filtered = filter_motions_by_time_windows(motions, start_date, time_windows)
-            print(f"Found {len(filtered)} motion files in desired windows for {start_date}.")
-            download_motion_files(filtered)
-        else:
-            current_date = start_date
-            while current_date <= end_date:
-                print(f"\nProcessing {current_date}")
-                motions = get_all_motion_files_for_date(current_date)
-                filtered = filter_motions_by_time_windows(motions, current_date, time_windows)
-                print(f"Found {len(filtered)} motion files in desired windows for {current_date}.")
+    try:
+        if args.start and args.end:
+            start_date = dt.strptime(args.start, "%Y-%m-%d").date()
+            end_date = dt.strptime(args.end, "%Y-%m-%d").date()
+            if start_date == end_date:
+                print(f"\nProcessing {start_date}")
+                motions = get_all_motion_files_for_date(start_date)
+                filtered = filter_motions_by_time_windows(motions, start_date, time_windows)
+                print(f"Found {len(filtered)} motion files in desired windows for {start_date}.")
                 download_motion_files(filtered)
-                current_date += timedelta(days=1)
-    elif args.start or args.end:
-        print("Error: You must specify BOTH --start and --end to use date range mode.")
-        exit(1)
-    else:
-        today = dt.now().date()
-        print(f"\nProcessing {today}")
-        motions = get_all_motion_files_for_date(today)
-        filtered = filter_motions_by_time_windows(motions, today, time_windows)
-        print(f"Found {len(filtered)} motion files in desired windows for today.")
-        download_motion_files(filtered)
+            else:
+                current_date = start_date
+                while current_date <= end_date:
+                    print(f"\nProcessing {current_date}")
+                    motions = get_all_motion_files_for_date(current_date)
+                    filtered = filter_motions_by_time_windows(motions, current_date, time_windows)
+                    print(f"Found {len(filtered)} motion files in desired windows for {current_date}.")
+                    download_motion_files(filtered)
+                    current_date += timedelta(days=1)
+        elif args.start or args.end:
+            print("Error: You must specify BOTH --start and --end to use date range mode.")
+            exit(1)
+        else:
+            today = dt.now().date()
+            print(f"\nProcessing {today}")
+            motions = get_all_motion_files_for_date(today)
+            filtered = filter_motions_by_time_windows(motions, today, time_windows)
+            print(f"Found {len(filtered)} motion files in desired windows for today.")
+            download_motion_files(filtered)
+        send_telegram_message("✅ Reolink automation script completed successfully.")
+    except Exception as e:
+        send_telegram_message(f"❌ Reolink automation script failed: {e}")
+        raise
     main() 
