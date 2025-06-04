@@ -117,7 +117,17 @@ def send_telegram_message(message):
             print("Telegram notification sent.")
         except Exception as e:
             print(f"Failed to send Telegram message: {e}")
-    asyncio.run(_send())
+    
+    try:
+        # Create new event loop
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        # Run the async function
+        loop.run_until_complete(_send())
+        # Close the loop
+        loop.close()
+    except Exception as e:
+        print(f"Error in event loop handling: {e}")
 
 def get_download_time_ranges():
     """Load and parse download time ranges from download_times.json for today."""
@@ -399,6 +409,9 @@ if __name__ == "__main__":
         time_windows = json.load(f)
 
     try:
+        # Initial notification
+        send_telegram_message("🎥 Starting Reolink video processing...")
+        
         if args.start and args.end:
             start_date = dt.strptime(args.start, "%Y-%m-%d").date()
             end_date = dt.strptime(args.end, "%Y-%m-%d").date()
@@ -427,8 +440,11 @@ if __name__ == "__main__":
             filtered = filter_motions_by_time_windows(motions, today, time_windows)
             print(f"Found {len(filtered)} motion files in desired windows for today.")
             download_motion_files(filtered)
-        send_telegram_message("✅ Reolink automation script completed successfully.")
+        
+        # Final success notification
+        send_telegram_message("✅ Reolink automation completed successfully")
     except Exception as e:
-        send_telegram_message(f"❌ Reolink automation script failed: {e}")
+        # Error notification
+        send_telegram_message(f"❌ Reolink automation failed: {e}")
         raise
     main() 
