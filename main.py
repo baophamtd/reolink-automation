@@ -286,6 +286,7 @@ def get_all_motion_files_for_date(target_date, max_retries=3, retry_delay=30):
     """
     Fetches all motion files for the given date with retry logic.
     Adds a delay for today's date to allow for camera indexing.
+    Only checks channel 0.
     """
     all_motions = []
     
@@ -307,24 +308,23 @@ def get_all_motion_files_for_date(target_date, max_retries=3, retry_delay=30):
                 start_dt = datetime.combine(target_date, datetime.min.time())
                 end_dt = datetime.combine(target_date, datetime.max.time())
                 
-                for channel in [0, 1, 2, 3]:
-                    try:
-                        channel_motions = cam.get_motion_files(
-                            start=start_dt,
-                            end=end_dt,
-                            streamtype='main',
-                            channel=channel
-                        )
-                        print(f"Channel {channel} motions: {channel_motions}")
-                        
-                        # Add channel info to each motion
-                        for motion in channel_motions:
-                            motion['channel'] = channel
-                        
-                        all_motions.extend(channel_motions)
-                    except Exception as e:
-                        print(f"Error fetching motions for channel {channel}: {e}")
-                        continue
+                # Only check channel 0
+                try:
+                    channel_motions = cam.get_motion_files(
+                        start=start_dt,
+                        end=end_dt,
+                        streamtype='main',
+                        channel=0
+                    )
+                    print(f"Channel 0 motions: {channel_motions}")
+                    
+                    # Add channel info to each motion
+                    for motion in channel_motions:
+                        motion['channel'] = 0
+                    
+                    all_motions.extend(channel_motions)
+                except Exception as e:
+                    print(f"Error fetching motions for channel 0: {e}")
             finally:
                 # Always logout
                 try:
@@ -354,6 +354,7 @@ def filter_motions_by_time_windows(motions, target_date, time_windows):
     """
     Filter a list of motion dicts to only those whose 'start' time falls within any of the specified time windows.
     time_windows: list of dicts with 'start' and 'end' in 'HH:MM' format.
+    Only processes channel 0 motions.
     """
     from datetime import datetime as dt
     window_ranges = []
@@ -361,16 +362,15 @@ def filter_motions_by_time_windows(motions, target_date, time_windows):
         win_start = dt.combine(target_date, dt.strptime(tr['start'], '%H:%M').time())
         win_end = dt.combine(target_date, dt.strptime(tr['end'], '%H:%M').time())
         window_ranges.append((win_start, win_end))
+    
     filtered = []
     for motion in motions:
         mstart = motion['start']
-        # Debug print for time types and values
-        print(f"DEBUG: motion['start']: {mstart} (type: {type(mstart)})")
         for win_start, win_end in window_ranges:
-            print(f"DEBUG: window: {win_start} to {win_end} (types: {type(win_start)}, {type(win_end)})")
             if win_start <= mstart < win_end:
                 filtered.append(motion)
                 break
+    
     return filtered
 
 def s3_file_exists(bucket, key, aws_region=None):
@@ -390,15 +390,20 @@ def s3_file_exists(bucket, key, aws_region=None):
             raise
 
 def download_motion_files(motions, max_retries=3, retry_delay=5):
+    """
+    Download motion files and upload them to S3.
+    Only processes channel 0 files.
+    """
     for motion in motions:
         fname = motion['filename']
-        channel = motion.get('channel', 'unknown')
         mstart = motion['start']
-        output_filename = mstart.strftime("%Y-%m-%d %H-%M-%S") + f"_ch{channel}.mp4"
+        output_filename = mstart.strftime("%Y-%m-%d %H-%M-%S") + "_ch0.mp4"
         s3_key = output_filename
+        
         if s3_file_exists(S3_BUCKET, s3_key, AWS_DEFAULT_REGION):
             print(f"File {s3_key} already exists in S3, skipping download and upload.")
             continue
+            
         if not os.path.isfile(output_filename):
             print(f"Downloading {fname} as {output_filename}")
             attempt = 0
@@ -421,6 +426,7 @@ def download_motion_files(motions, max_retries=3, retry_delay=5):
             else:
                 print(f"Failed to download {fname} after {max_retries} attempts.")
                 continue  # Skip upload if download failed
+                
             # Upload to S3
             s3_url = upload_to_s3(output_filename, S3_BUCKET, AWS_DEFAULT_REGION)
             if s3_url:
@@ -431,10 +437,6 @@ def download_motion_files(motions, max_retries=3, retry_delay=5):
                 print("Failed to upload to S3.")
         else:
             print(f"File {output_filename} already exists locally, skipping download.")
-
-def main():
-    # TODO: Implement main job logic
-    pass
 
 if __name__ == "__main__":
     import argparse
@@ -492,5 +494,4 @@ if __name__ == "__main__":
         send_telegram_message("✅ Reolink automation completed successfully!")
     except Exception as e:
         send_telegram_message(f"❌ Reolink automation failed: {e}")
-        raise
-    main() 
+        raise 
