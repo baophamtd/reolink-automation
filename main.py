@@ -117,17 +117,7 @@ def send_telegram_message(message):
             print("Telegram notification sent.")
         except Exception as e:
             print(f"Failed to send Telegram message: {e}")
-    
-    try:
-        # Create new event loop
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        # Run the async function
-        loop.run_until_complete(_send())
-        # Close the loop
-        loop.close()
-    except Exception as e:
-        print(f"Error in event loop handling: {e}")
+    asyncio.run(_send())
 
 def get_download_time_ranges():
     """Load and parse download time ranges from download_times.json for today."""
@@ -292,23 +282,40 @@ def process_date_with_window_filter(target_date):
         else:
             print(f"File {output_filename} already exists, skipping download.")
 
-def get_all_motion_files_for_date(target_date):
+def get_all_motion_files_for_date(target_date, max_retries=3, retry_delay=30):
     """
-    Fetches all motion files for the given date (midnight to 23:59:59) for channel 0, 'main' stream only.
-    Returns a list of motion dicts, each with 'filename', 'start', 'end', and channel info.
+    Fetches all motion files for the given date with retry logic.
+    Adds a delay for today's date to allow for camera indexing.
     """
-    from datetime import datetime as dt, time as dttime
-    start = dt.combine(target_date, dttime(0, 0, 0))
-    end = dt.combine(target_date, dttime(23, 59, 59))
-    print(f"\nFetching all motion files for {target_date} from {start} to {end}")
-    cam = Camera(REOLINK_HOST, REOLINK_USER, REOLINK_PASSWORD, https=True, defer_login=True)
-    cam.login()
-    motions = cam.get_motion_files(start=start, end=end, streamtype='main', channel=0)
-    print(f"Channel 0 motions: {motions}")
-    for motion in motions:
-        motion['channel'] = 0
-    cam.logout()
-    return motions
+    for attempt in range(max_retries):
+        try:
+            # For today's date, add a small delay to allow for indexing
+            if target_date.date() == datetime.now().date():
+                time.sleep(10)  # Brief delay for indexing
+            
+            motions = []
+            for channel in range(NUM_CHANNELS):
+                channel_motions = camera.get_motion_files(channel, target_date)
+                print(f"Channel {channel} motions: {channel_motions}")
+                motions.extend(channel_motions)
+            
+            if not motions and attempt < max_retries - 1:
+                print(f"No motions found on attempt {attempt + 1}, retrying in {retry_delay} seconds...")
+                time.sleep(retry_delay)
+                continue
+                
+            return motions
+            
+        except Exception as e:
+            if attempt < max_retries - 1:
+                print(f"Error fetching motions on attempt {attempt + 1}: {e}")
+                print(f"Retrying in {retry_delay} seconds...")
+                time.sleep(retry_delay)
+            else:
+                print(f"Failed to fetch motions after {max_retries} attempts: {e}")
+                raise
+    
+    return []
 
 def filter_motions_by_time_windows(motions, target_date, time_windows):
     """
@@ -409,9 +416,6 @@ if __name__ == "__main__":
         time_windows = json.load(f)
 
     try:
-        # Initial notification
-        send_telegram_message("🎥 Starting Reolink video processing...")
-        
         if args.start and args.end:
             start_date = dt.strptime(args.start, "%Y-%m-%d").date()
             end_date = dt.strptime(args.end, "%Y-%m-%d").date()
@@ -440,11 +444,8 @@ if __name__ == "__main__":
             filtered = filter_motions_by_time_windows(motions, today, time_windows)
             print(f"Found {len(filtered)} motion files in desired windows for today.")
             download_motion_files(filtered)
-        
-        # Final success notification
-        send_telegram_message("✅ Reolink automation completed successfully")
+        send_telegram_message("✅ Reolink automation script completed successfully.")
     except Exception as e:
-        # Error notification
-        send_telegram_message(f"❌ Reolink automation failed: {e}")
+        send_telegram_message(f"❌ Reolink automation script failed: {e}")
         raise
     main() 
