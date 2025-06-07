@@ -290,14 +290,24 @@ def get_all_motion_files_for_date(target_date, max_retries=3, retry_delay=30):
     for attempt in range(max_retries):
         try:
             # For today's date, add a small delay to allow for indexing
-            if target_date.date() == datetime.now().date():
+            if target_date == datetime.now().date():
                 time.sleep(10)  # Brief delay for indexing
             
             motions = []
-            for channel in range(NUM_CHANNELS):
-                channel_motions = camera.get_motion_files(channel, target_date)
+            cam = Camera(REOLINK_HOST, REOLINK_USER, REOLINK_PASSWORD, https=True, defer_login=True)
+            cam.login()
+            for channel in [0, 1, 2, 3]:
+                channel_motions = cam.get_motion_files(
+                    start=datetime.combine(target_date, datetime.min.time()),
+                    end=datetime.combine(target_date, datetime.max.time()),
+                    streamtype='main',
+                    channel=channel
+                )
                 print(f"Channel {channel} motions: {channel_motions}")
+                for motion in channel_motions:
+                    motion['channel'] = channel
                 motions.extend(channel_motions)
+            cam.logout()
             
             if not motions and attempt < max_retries - 1:
                 print(f"No motions found on attempt {attempt + 1}, retrying in {retry_delay} seconds...")
