@@ -287,45 +287,68 @@ def get_all_motion_files_for_date(target_date, max_retries=3, retry_delay=30):
     Fetches all motion files for the given date with retry logic.
     Adds a delay for today's date to allow for camera indexing.
     """
+    all_motions = []
+    
     for attempt in range(max_retries):
         try:
             # For today's date, add a small delay to allow for indexing
-            if target_date == datetime.now().date():
+            today = datetime.now().date()
+            if target_date == today:
+                print(f"Checking today's motions, adding delay for indexing...")
                 time.sleep(10)  # Brief delay for indexing
             
-            motions = []
+            # Create a new camera connection for each attempt
             cam = Camera(REOLINK_HOST, REOLINK_USER, REOLINK_PASSWORD, https=True, defer_login=True)
             cam.login()
-            for channel in [0, 1, 2, 3]:
-                channel_motions = cam.get_motion_files(
-                    start=datetime.combine(target_date, datetime.min.time()),
-                    end=datetime.combine(target_date, datetime.max.time()),
-                    streamtype='main',
-                    channel=channel
-                )
-                print(f"Channel {channel} motions: {channel_motions}")
-                for motion in channel_motions:
-                    motion['channel'] = channel
-                motions.extend(channel_motions)
-            cam.logout()
+            print(f"Login success")
             
-            if not motions and attempt < max_retries - 1:
-                print(f"No motions found on attempt {attempt + 1}, retrying in {retry_delay} seconds...")
-                time.sleep(retry_delay)
-                continue
+            try:
+                # Convert date to datetime range
+                start_dt = datetime.combine(target_date, datetime.min.time())
+                end_dt = datetime.combine(target_date, datetime.max.time())
                 
-            return motions
+                for channel in [0, 1, 2, 3]:
+                    try:
+                        channel_motions = cam.get_motion_files(
+                            start=start_dt,
+                            end=end_dt,
+                            streamtype='main',
+                            channel=channel
+                        )
+                        print(f"Channel {channel} motions: {channel_motions}")
+                        
+                        # Add channel info to each motion
+                        for motion in channel_motions:
+                            motion['channel'] = channel
+                        
+                        all_motions.extend(channel_motions)
+                    except Exception as e:
+                        print(f"Error fetching motions for channel {channel}: {e}")
+                        continue
+            finally:
+                # Always logout
+                try:
+                    cam.logout()
+                except:
+                    pass
             
-        except Exception as e:
+            # If we found any motions, we're done
+            if all_motions:
+                return all_motions
+                
+            print(f"No motions found on attempt {attempt + 1}")
             if attempt < max_retries - 1:
-                print(f"Error fetching motions on attempt {attempt + 1}: {e}")
                 print(f"Retrying in {retry_delay} seconds...")
                 time.sleep(retry_delay)
-            else:
-                print(f"Failed to fetch motions after {max_retries} attempts: {e}")
-                raise
+                
+        except Exception as e:
+            print(f"Error fetching motions on attempt {attempt + 1}: {e}")
+            if attempt < max_retries - 1:
+                print(f"Retrying in {retry_delay} seconds...")
+                time.sleep(retry_delay)
     
-    return []
+    print(f"Failed to fetch motions after {max_retries} attempts")
+    return all_motions
 
 def filter_motions_by_time_windows(motions, target_date, time_windows):
     """
@@ -426,6 +449,9 @@ if __name__ == "__main__":
         time_windows = json.load(f)
 
     try:
+        # Send start notification
+        send_telegram_message("🎥 Starting Reolink video processing...")
+
         if args.start and args.end:
             start_date = dt.strptime(args.start, "%Y-%m-%d").date()
             end_date = dt.strptime(args.end, "%Y-%m-%d").date()
@@ -433,7 +459,10 @@ if __name__ == "__main__":
                 print(f"\nProcessing {start_date}")
                 motions = get_all_motion_files_for_date(start_date)
                 filtered = filter_motions_by_time_windows(motions, start_date, time_windows)
-                print(f"Found {len(filtered)} motion files in desired windows for {start_date}.")
+                count = len(filtered)
+                print(f"Found {count} motion files in desired windows for {start_date}.")
+                if count > 0:
+                    send_telegram_message(f"📥 Processing {count} videos from {start_date}...")
                 download_motion_files(filtered)
             else:
                 current_date = start_date
@@ -441,7 +470,10 @@ if __name__ == "__main__":
                     print(f"\nProcessing {current_date}")
                     motions = get_all_motion_files_for_date(current_date)
                     filtered = filter_motions_by_time_windows(motions, current_date, time_windows)
-                    print(f"Found {len(filtered)} motion files in desired windows for {current_date}.")
+                    count = len(filtered)
+                    print(f"Found {count} motion files in desired windows for {current_date}.")
+                    if count > 0:
+                        send_telegram_message(f"📥 Processing {count} videos from {current_date}...")
                     download_motion_files(filtered)
                     current_date += timedelta(days=1)
         elif args.start or args.end:
@@ -452,10 +484,13 @@ if __name__ == "__main__":
             print(f"\nProcessing {today}")
             motions = get_all_motion_files_for_date(today)
             filtered = filter_motions_by_time_windows(motions, today, time_windows)
-            print(f"Found {len(filtered)} motion files in desired windows for today.")
+            count = len(filtered)
+            print(f"Found {count} motion files in desired windows for today.")
+            if count > 0:
+                send_telegram_message(f"📥 Processing {count} videos from today...")
             download_motion_files(filtered)
-        send_telegram_message("✅ Reolink automation script completed successfully.")
+        send_telegram_message("✅ Reolink automation completed successfully!")
     except Exception as e:
-        send_telegram_message(f"❌ Reolink automation script failed: {e}")
+        send_telegram_message(f"❌ Reolink automation failed: {e}")
         raise
     main() 
