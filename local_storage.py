@@ -19,8 +19,14 @@ def ensure_storage_directory(date=None):
     
     if not os.path.exists(storage_path):
         os.makedirs(storage_path, exist_ok=True)
-        # Set proper permissions for Nextcloud
+        # Set proper permissions and ownership for Nextcloud
         os.chmod(storage_path, 0o755)
+        # Set ownership to www-data (Nextcloud user)
+        import subprocess
+        try:
+            subprocess.run(['sudo', 'chown', 'www-data:www-data', storage_path], check=True)
+        except subprocess.CalledProcessError:
+            print(f"Warning: Could not set ownership for {storage_path}")
         print(f"Created storage directory: {storage_path}")
     
     return storage_path
@@ -56,8 +62,14 @@ def save_to_local_storage(filepath, date=None):
         import shutil
         shutil.move(filepath, destination_path)
         
-        # Set proper permissions for Nextcloud access
+        # Set proper permissions and ownership for Nextcloud access
         os.chmod(destination_path, 0o644)
+        # Set ownership to www-data (Nextcloud user)
+        import subprocess
+        try:
+            subprocess.run(['sudo', 'chown', 'www-data:www-data', destination_path], check=True)
+        except subprocess.CalledProcessError:
+            print(f"Warning: Could not set ownership for {destination_path}")
         
         file_size = os.path.getsize(destination_path)
         print(f"Successfully saved to local storage: {destination_path} ({file_size} bytes)")
@@ -120,8 +132,14 @@ def download_to_local_storage(cam, fname, output_filename, date=None, max_retrie
             
             # If we get here, download was successful
             if os.path.isfile(local_filepath):
-                # Set proper permissions for Nextcloud access
+                # Set proper permissions and ownership for Nextcloud access
                 os.chmod(local_filepath, 0o644)
+                # Set ownership to www-data (Nextcloud user)
+                import subprocess
+                try:
+                    subprocess.run(['sudo', 'chown', 'www-data:www-data', local_filepath], check=True)
+                except subprocess.CalledProcessError:
+                    print(f"Warning: Could not set ownership for {local_filepath}")
                 file_size = os.path.getsize(local_filepath)
                 print(f"Successfully downloaded to local storage: {local_filepath} ({file_size} bytes)")
                 return local_filepath
