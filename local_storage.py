@@ -21,12 +21,14 @@ def ensure_storage_directory(date=None):
     if not os.path.exists(storage_path):
         os.makedirs(storage_path, exist_ok=True)
         # Set proper permissions and ownership for Nextcloud
-        os.chmod(storage_path, 0o755)
-        # Set ownership to www-data (Nextcloud user)
+        os.chmod(storage_path, 0o775)  # Changed to 775 for group write access
+        # Set ownership to current user and www-data group
         import subprocess
         try:
-            subprocess.run(['sudo', 'chown', 'www-data:www-data', storage_path], check=True)
-            print(f"Set ownership to www-data for directory {storage_path}")
+            import pwd
+            current_user = pwd.getpwuid(os.getuid()).pw_name
+            subprocess.run(['sudo', 'chown', f'{current_user}:www-data', storage_path], check=True)
+            print(f"Set ownership to {current_user}:www-data for directory {storage_path}")
         except subprocess.CalledProcessError:
             print(f"Warning: Could not set ownership for {storage_path}")
             print("You may need to run: sudo usermod -aG www-data $USER")
@@ -132,8 +134,15 @@ def download_to_local_storage(cam, fname, output_filename, date=None, max_retrie
         print(f"File {output_filename} already exists in local storage, skipping download.")
         return local_filepath
     
-    # Ensure storage directory exists
+    # Ensure storage directory exists with proper permissions
     ensure_storage_directory(date)
+    
+    # Double-check we can write to the directory
+    if not os.access(storage_path, os.W_OK):
+        print(f"ERROR: Cannot write to directory {storage_path}")
+        print("Please run: sudo chown -R $USER:www-data /mnt/data/nextcloud/data/bao/files/Photos/reolink-cams/e1")
+        print("And: sudo chmod -R 775 /mnt/data/nextcloud/data/bao/files/Photos/reolink-cams/e1")
+        return None
     
     print(f"Downloading {fname} directly to {local_filepath}")
     print(f"Debug: Starting download attempt...")
