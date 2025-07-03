@@ -5,12 +5,11 @@ from datetime import datetime
 from reolinkapi import Camera
 import urllib3
 import requests
-import boto3
-from botocore.exceptions import BotoCoreError, ClientError
 import argparse
 from telegram import Bot
 import asyncio
 import time
+from local_storage import download_to_local_storage, local_file_exists
 
 # WORKING DEBUG VERSION: Fetches and downloads all motion files for today (midnight to now) for all channels (0-3), 'main' stream only.
 # Use this as a reference point for a known good state.
@@ -23,11 +22,7 @@ REOLINK_HOST = os.getenv('REOLINK_HOST')
 REOLINK_USER = os.getenv('REOLINK_USER')
 REOLINK_PASSWORD = os.getenv('REOLINK_PASSWORD')
 
-# AWS S3 config
-AWS_ACCESS_KEY_ID = os.getenv('AWS_ACCESS_KEY_ID')
-AWS_SECRET_ACCESS_KEY = os.getenv('AWS_SECRET_ACCESS_KEY')
-AWS_DEFAULT_REGION = os.getenv('AWS_DEFAULT_REGION')
-S3_BUCKET = os.getenv('S3_BUCKET')
+# Local storage config - no AWS S3 needed
 
 # Telegram config
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
@@ -64,7 +59,7 @@ def download_video(start_dt, end_dt):
 
 def download_motion_files(motions, max_retries=5, retry_delay=30):
     """
-    Download motion files and upload them to S3.
+    Download motion files and save them to local storage.
     Only processes channel 0 files.
     Uses increased timeouts and retry delays for better reliability.
     """
@@ -72,131 +67,101 @@ def download_motion_files(motions, max_retries=5, retry_delay=30):
         fname = motion['filename']
         mstart = motion['start']
         output_filename = mstart.strftime("%Y-%m-%d %H-%M-%S") + "_ch0.mp4"
-        s3_key = output_filename
+        target_date = mstart.date()
         
-        if s3_file_exists(S3_BUCKET, s3_key, AWS_DEFAULT_REGION):
-            print(f"File {s3_key} already exists in S3, skipping download and upload.")
+        if local_file_exists(output_filename, target_date):
+            print(f"File {output_filename} already exists in local storage, skipping download.")
             continue
-            
-        if not os.path.isfile(output_filename):
-            print(f"Downloading {fname} as {output_filename}")
-            attempt = 0
-            while attempt < max_retries:
-                cam = None
-                try:
-                    # Create a new camera connection with increased timeout
-                    cam = Camera(
-                        REOLINK_HOST, 
-                        REOLINK_USER, 
-                        REOLINK_PASSWORD, 
-                        https=True, 
-                        defer_login=True,
-                        timeout=60  # Increase timeout to 60 seconds for large files
-                    )
-                    
-                    # Try to login with retries
-                    login_attempt = 0
-                    while login_attempt < 3:  # 3 login retries
-                        try:
-                            cam.login()
-                            print(f"Login success - Download attempt {attempt + 1}/{max_retries}")
-                            break
-                        except Exception as e:
-                            login_attempt += 1
-                            if login_attempt < 3:
-                                print(f"Login failed, retrying {login_attempt}/3...")
-                                time.sleep(5)  # Short delay between login attempts
-                            else:
-                                raise Exception(f"Failed to login after 3 attempts: {e}")
-                    
-                    # Configure session for streaming
-                    session = requests.Session()
-                    session.verify = False
-                    session.timeout = (10, 120)  # 10s connect timeout, 120s read timeout
-                    cam._session = session
-                    
-                    # Try to download with increased timeout
-                    resp = cam.get_file(fname, output_path=output_filename)
-                    
-                    # If we get here, download was successful
-                    print(f"Successfully downloaded to {output_filename}")
+        
+        print(f"Downloading {fname} as {output_filename}")
+        attempt = 0
+        while attempt < max_retries:
+            cam = None
+            try:
+                # Create a new camera connection with increased timeout
+                cam = Camera(
+                    REOLINK_HOST, 
+                    REOLINK_USER, 
+                    REOLINK_PASSWORD, 
+                    https=True, 
+                    defer_login=True,
+                    timeout=60  # Increase timeout to 60 seconds for large files
+                )
+                
+                # Try to login with retries
+                login_attempt = 0
+                while login_attempt < 3:  # 3 login retries
+                    try:
+                        cam.login()
+                        print(f"Login success - Download attempt {attempt + 1}/{max_retries}")
+                        break
+                    except Exception as e:
+                        login_attempt += 1
+                        if login_attempt < 3:
+                            print(f"Login failed, retrying {login_attempt}/3...")
+                            time.sleep(5)  # Short delay between login attempts
+                        else:
+                            raise Exception(f"Failed to login after 3 attempts: {e}")
+                
+                # Configure session for streaming
+                session = requests.Session()
+                session.verify = False
+                session.timeout = (10, 120)  # 10s connect timeout, 120s read timeout
+                cam._session = session
+                
+                # Download directly to local storage
+                result = download_to_local_storage(cam, fname, output_filename, target_date, max_retries, retry_delay)
+                if result:
+                    print(f"Successfully downloaded to local storage: {result}")
                     if cam:
                         try:
                             cam.logout()
                         except:
                             pass
                     break  # Success, exit retry loop
-                    
-                except requests.exceptions.ReadTimeout:
-                    attempt += 1
-                    if cam:
-                        try:
-                            cam.logout()
-                        except:
-                            pass
-                    if attempt < max_retries:
-                        print(f"Timeout while downloading {fname}. Retrying {attempt}/{max_retries} in {retry_delay}s...")
-                        time.sleep(retry_delay)
-                    else:
-                        print(f"Failed to download {fname} after {max_retries} attempts due to timeouts.")
-                        
-                except requests.exceptions.RequestException as e:
-                    attempt += 1
-                    if cam:
-                        try:
-                            cam.logout()
-                        except:
-                            pass
-                    if attempt < max_retries:
-                        print(f"Network error while downloading {fname}: {e}. Retrying {attempt}/{max_retries} in {retry_delay}s...")
-                        time.sleep(retry_delay)
-                    else:
-                        print(f"Failed to download {fname} after {max_retries} attempts due to network errors.")
-                        
-                except Exception as e:
-                    attempt += 1
-                    if cam:
-                        try:
-                            cam.logout()
-                        except:
-                            pass
-                    if attempt < max_retries:
-                        print(f"Error while downloading {fname}: {e}. Retrying {attempt}/{max_retries} in {retry_delay}s...")
-                        time.sleep(retry_delay)
-                    else:
-                        print(f"Failed to download {fname} after {max_retries} attempts due to unexpected error.")
-            
-            # Only try upload if we successfully downloaded
-            if os.path.isfile(output_filename):
-                s3_url = upload_to_s3(output_filename, S3_BUCKET, AWS_DEFAULT_REGION)
-                if s3_url:
-                    print(f"Uploaded to S3: {s3_url}")
-                    os.remove(output_filename)
-                    print(f"Deleted local file: {output_filename}")
                 else:
-                    print("Failed to upload to S3.")
-        else:
-            print(f"File {output_filename} already exists locally, skipping download.")
+                    raise Exception("Download to local storage failed")
+                    
+            except requests.exceptions.ReadTimeout:
+                attempt += 1
+                if cam:
+                    try:
+                        cam.logout()
+                    except:
+                        pass
+                if attempt < max_retries:
+                    print(f"Timeout while downloading {fname}. Retrying {attempt}/{max_retries} in {retry_delay}s...")
+                    time.sleep(retry_delay)
+                else:
+                    print(f"Failed to download {fname} after {max_retries} attempts due to timeouts.")
+                    
+            except requests.exceptions.RequestException as e:
+                attempt += 1
+                if cam:
+                    try:
+                        cam.logout()
+                    except:
+                        pass
+                if attempt < max_retries:
+                    print(f"Network error while downloading {fname}: {e}. Retrying {attempt}/{max_retries} in {retry_delay}s...")
+                    time.sleep(retry_delay)
+                else:
+                    print(f"Failed to download {fname} after {max_retries} attempts due to network errors.")
+                    
+            except Exception as e:
+                attempt += 1
+                if cam:
+                    try:
+                        cam.logout()
+                    except:
+                        pass
+                if attempt < max_retries:
+                    print(f"Error while downloading {fname}: {e}. Retrying {attempt}/{max_retries} in {retry_delay}s...")
+                    time.sleep(retry_delay)
+                else:
+                    print(f"Failed to download {fname} after {max_retries} attempts due to unexpected error.")
 
-def upload_to_s3(filepath, bucket, aws_region=None):
-    """
-    Upload a file to AWS S3 and return the S3 URL or None on failure.
-    """
-    s3 = boto3.client(
-        's3',
-        aws_access_key_id=AWS_ACCESS_KEY_ID,
-        aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
-        region_name=aws_region or AWS_DEFAULT_REGION
-    )
-    filename = os.path.basename(filepath)
-    try:
-        s3.upload_file(filepath, bucket, filename)
-        s3_url = f"https://{bucket}.s3.{AWS_DEFAULT_REGION}.amazonaws.com/{filename}"
-        print(f"Uploaded to S3: {s3_url}")
-        return s3_url
-    except (BotoCoreError, ClientError) as e:
-        print(f"S3 upload failed: {e}")
-        return None
+
 
 def send_telegram_message(message):
     async def _send():
@@ -290,6 +255,7 @@ def process_date_range(start_date, end_date):
             channel = motion.get('channel', 'unknown')
             mstart = motion['start']
             output_filename = mstart.strftime("%Y-%m-%d %H-%M-%S") + f"_ch{channel}.mp4"
+            target_date = current_date  # for process_date_range
             if not os.path.isfile(output_filename):
                 print(f"Downloading {fname} as {output_filename}")
                 cam = Camera(REOLINK_HOST, REOLINK_USER, REOLINK_PASSWORD, https=True, defer_login=True)
@@ -297,14 +263,13 @@ def process_date_range(start_date, end_date):
                 resp = cam.get_file(fname, output_path=output_filename)
                 cam.logout()
                 print(f"Downloaded to {output_filename}")
-                # Upload to S3
-                s3_url = upload_to_s3(output_filename, S3_BUCKET, AWS_DEFAULT_REGION)
-                if s3_url:
-                    print(f"Uploaded to S3: {s3_url}")
-                    os.remove(output_filename)
-                    print(f"Deleted local file: {output_filename}")
+                # Save to local storage
+                from local_storage import save_to_local_storage
+                result = save_to_local_storage(output_filename, target_date)
+                if result:
+                    print(f"Saved to local storage: {result}")
                 else:
-                    print("Failed to upload to S3.")
+                    print("Failed to save to local storage.")
             else:
                 print(f"File {output_filename} already exists, skipping download.")
         current_date += timedelta(days=1)
@@ -353,6 +318,7 @@ def process_date_with_window_filter(target_date):
         channel = motion.get('channel', 'unknown')
         mstart = motion['start']
         output_filename = mstart.strftime("%Y-%m-%d %H-%M-%S") + f"_ch{channel}.mp4"
+        target_date = target_date  # for process_date_with_window_filter
         if not os.path.isfile(output_filename):
             print(f"Downloading {fname} as {output_filename}")
             cam = Camera(REOLINK_HOST, REOLINK_USER, REOLINK_PASSWORD, https=True, defer_login=True)
@@ -360,14 +326,13 @@ def process_date_with_window_filter(target_date):
             resp = cam.get_file(fname, output_path=output_filename)
             cam.logout()
             print(f"Downloaded to {output_filename}")
-            # Upload to S3
-            s3_url = upload_to_s3(output_filename, S3_BUCKET, AWS_DEFAULT_REGION)
-            if s3_url:
-                print(f"Uploaded to S3: {s3_url}")
-                os.remove(output_filename)
-                print(f"Deleted local file: {output_filename}")
+            # Save to local storage
+            from local_storage import save_to_local_storage
+            result = save_to_local_storage(output_filename, target_date)
+            if result:
+                print(f"Saved to local storage: {result}")
             else:
-                print("Failed to upload to S3.")
+                print("Failed to save to local storage.")
         else:
             print(f"File {output_filename} already exists, skipping download.")
 
