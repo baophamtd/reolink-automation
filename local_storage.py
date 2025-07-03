@@ -1,13 +1,14 @@
 import os
 from datetime import datetime
 
-# Local storage config
-LOCAL_STORAGE_PATH = "/mnt/data/personal/reolink-cams/e1"
+# Local storage config - Nextcloud directory
+LOCAL_STORAGE_PATH = "/mnt/data/nextcloud/data/bao/files/Photos/reolink-cams/e1"
 
 def ensure_storage_directory(date=None):
     """
     Ensure the storage directory exists and create it if it doesn't.
     If date is provided, creates a subdirectory for that date.
+    Sets proper permissions for Nextcloud access.
     """
     if date:
         # Create date-specific directory (YYYY-MM-DD format)
@@ -18,6 +19,8 @@ def ensure_storage_directory(date=None):
     
     if not os.path.exists(storage_path):
         os.makedirs(storage_path, exist_ok=True)
+        # Set proper permissions for Nextcloud
+        os.chmod(storage_path, 0o755)
         print(f"Created storage directory: {storage_path}")
     
     return storage_path
@@ -52,6 +55,9 @@ def save_to_local_storage(filepath, date=None):
         # Move the file to local storage
         import shutil
         shutil.move(filepath, destination_path)
+        
+        # Set proper permissions for Nextcloud access
+        os.chmod(destination_path, 0o644)
         
         file_size = os.path.getsize(destination_path)
         print(f"Successfully saved to local storage: {destination_path} ({file_size} bytes)")
@@ -114,6 +120,8 @@ def download_to_local_storage(cam, fname, output_filename, date=None, max_retrie
             
             # If we get here, download was successful
             if os.path.isfile(local_filepath):
+                # Set proper permissions for Nextcloud access
+                os.chmod(local_filepath, 0o644)
                 file_size = os.path.getsize(local_filepath)
                 print(f"Successfully downloaded to local storage: {local_filepath} ({file_size} bytes)")
                 return local_filepath
