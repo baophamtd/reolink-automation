@@ -25,8 +25,12 @@ def ensure_storage_directory(date=None):
         import subprocess
         try:
             subprocess.run(['sudo', 'chown', 'www-data:www-data', storage_path], check=True)
+            print(f"Set ownership to www-data for directory {storage_path}")
         except subprocess.CalledProcessError:
             print(f"Warning: Could not set ownership for {storage_path}")
+            print("You may need to run: sudo usermod -aG www-data $USER")
+        except FileNotFoundError:
+            print(f"Warning: sudo not available, ownership not set for {storage_path}")
         print(f"Created storage directory: {storage_path}")
     
     return storage_path
@@ -68,8 +72,12 @@ def save_to_local_storage(filepath, date=None):
         import subprocess
         try:
             subprocess.run(['sudo', 'chown', 'www-data:www-data', destination_path], check=True)
+            print(f"Set ownership to www-data for {destination_path}")
         except subprocess.CalledProcessError:
             print(f"Warning: Could not set ownership for {destination_path}")
+            print("You may need to run: sudo usermod -aG www-data $USER")
+        except FileNotFoundError:
+            print(f"Warning: sudo not available, ownership not set for {destination_path}")
         
         file_size = os.path.getsize(destination_path)
         print(f"Successfully saved to local storage: {destination_path} ({file_size} bytes)")
@@ -138,8 +146,12 @@ def download_to_local_storage(cam, fname, output_filename, date=None, max_retrie
                 import subprocess
                 try:
                     subprocess.run(['sudo', 'chown', 'www-data:www-data', local_filepath], check=True)
+                    print(f"Set ownership to www-data for {local_filepath}")
                 except subprocess.CalledProcessError:
                     print(f"Warning: Could not set ownership for {local_filepath}")
+                    print("You may need to run: sudo usermod -aG www-data $USER")
+                except FileNotFoundError:
+                    print(f"Warning: sudo not available, ownership not set for {local_filepath}")
                 file_size = os.path.getsize(local_filepath)
                 print(f"Successfully downloaded to local storage: {local_filepath} ({file_size} bytes)")
                 return local_filepath
