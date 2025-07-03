@@ -135,7 +135,7 @@ def download_to_local_storage(cam, fname, output_filename, date=None, max_retrie
         return local_filepath
     
     # Ensure storage directory exists with proper permissions
-    ensure_storage_directory(date)
+    storage_path = ensure_storage_directory(date)
     
     # Double-check we can write to the directory
     if not os.access(storage_path, os.W_OK):
