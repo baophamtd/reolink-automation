@@ -86,7 +86,7 @@ def save_to_local_storage(filepath, date=None):
         print(f"Successfully saved to local storage: {destination_path} ({file_size} bytes)")
         
         # Trigger Nextcloud scan for the new file
-        # trigger_nextcloud_scan(destination_path)  # Temporarily disabled for debugging
+        trigger_nextcloud_scan(destination_path)
         
         return destination_path
         
@@ -171,7 +171,7 @@ def download_to_local_storage(cam, fname, output_filename, date=None, max_retrie
                 print(f"Successfully downloaded to local storage: {local_filepath} ({file_size} bytes)")
                 
                 # Trigger Nextcloud scan for the new file
-                # trigger_nextcloud_scan(local_filepath)  # Temporarily disabled for debugging
+                trigger_nextcloud_scan(local_filepath)
                 
                 return local_filepath
             else:
