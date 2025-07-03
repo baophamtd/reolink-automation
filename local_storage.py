@@ -150,6 +150,7 @@ def download_to_local_storage(cam, fname, output_filename, date=None, max_retrie
     while attempt < max_retries:
         try:
             # Try to download with increased timeout
+            print(f"Debug: Attempting download with timeout...")
             resp = cam.get_file(fname, output_path=local_filepath)
             
             # If we get here, download was successful
