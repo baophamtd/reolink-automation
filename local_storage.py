@@ -1,5 +1,6 @@
 import os
 from datetime import datetime
+import subprocess
 
 # Local storage config - Nextcloud directory
 LOCAL_STORAGE_PATH = "/mnt/data/nextcloud/data/bao/files/Photos/reolink-cams/e1"
@@ -82,6 +83,9 @@ def save_to_local_storage(filepath, date=None):
         file_size = os.path.getsize(destination_path)
         print(f"Successfully saved to local storage: {destination_path} ({file_size} bytes)")
         
+        # Trigger Nextcloud scan for the new file
+        trigger_nextcloud_scan(destination_path)
+        
         return destination_path
         
     except Exception as e:
@@ -154,6 +158,10 @@ def download_to_local_storage(cam, fname, output_filename, date=None, max_retrie
                     print(f"Warning: sudo not available, ownership not set for {local_filepath}")
                 file_size = os.path.getsize(local_filepath)
                 print(f"Successfully downloaded to local storage: {local_filepath} ({file_size} bytes)")
+                
+                # Trigger Nextcloud scan for the new file
+                trigger_nextcloud_scan(local_filepath)
+                
                 return local_filepath
             else:
                 raise Exception("Download completed but file not found")
@@ -183,3 +191,42 @@ def download_to_local_storage(cam, fname, output_filename, date=None, max_retrie
                 print(f"Failed to download {fname} after {max_retries} attempts due to unexpected error.")
     
     return None 
+
+def trigger_nextcloud_scan(filepath):
+    """
+    Trigger Nextcloud to scan for new files.
+    Uses the Nextcloud occ command to scan the file.
+    """
+    try:
+        # Get the relative path from the Nextcloud data directory
+        nextcloud_data_path = "/mnt/data/nextcloud/data"
+        if filepath.startswith(nextcloud_data_path):
+            relative_path = filepath[len(nextcloud_data_path):].lstrip('/')
+            # Extract the user and file path
+            parts = relative_path.split('/', 2)  # user/files/path
+            if len(parts) >= 3:
+                user = parts[0]
+                file_path = parts[2]  # Skip 'files' part
+                
+                # Run Nextcloud scan command
+                cmd = [
+                    'sudo', '-u', 'www-data', 
+                    'docker', 'exec', 'nextcloud-nextcloud-1',
+                    'php', 'occ', 'files:scan', '--path', f'{user}/files/{file_path}'
+                ]
+                
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                if result.returncode == 0:
+                    print(f"Nextcloud scan triggered for {file_path}")
+                else:
+                    print(f"Nextcloud scan failed: {result.stderr}")
+            else:
+                print(f"Could not parse file path for Nextcloud scan: {filepath}")
+        else:
+            print(f"File not in Nextcloud data directory: {filepath}")
+            
+    except subprocess.TimeoutExpired:
+        print("Nextcloud scan timed out")
+    except Exception as e:
+        print(f"Failed to trigger Nextcloud scan: {e}")
+        print("You may need to manually refresh Nextcloud or run: sudo -u www-data docker exec nextcloud-nextcloud-1 php occ files:scan --all") 
