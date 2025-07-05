@@ -40,4 +40,8 @@ source venv/bin/activate
 # Run the script and log output
 python main.py >> cron.log 2>&1
 
+# Trigger Nextcloud scan after all downloads are complete
+echo "=== Triggering Nextcloud scan at $(date) ===" >> cron.log
+sudo -u www-data docker exec nextcloud-nextcloud-1 php occ files:scan --all >> cron.log 2>&1
+
 echo "=== Script ended at $(date) ===" >> cron.log 

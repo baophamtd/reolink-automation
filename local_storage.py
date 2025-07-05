@@ -71,11 +71,13 @@ def save_to_local_storage(filepath, date=None):
         
         # Set proper permissions and ownership for Nextcloud access
         os.chmod(destination_path, 0o644)
-        # Set ownership to www-data (Nextcloud user)
+        # Set ownership to current user and www-data group
         import subprocess
         try:
-            subprocess.run(['sudo', 'chown', 'www-data:www-data', destination_path], check=True)
-            print(f"Set ownership to www-data for {destination_path}")
+            import pwd
+            current_user = pwd.getpwuid(os.getuid()).pw_name
+            subprocess.run(['sudo', 'chown', f'{current_user}:www-data', destination_path], check=True)
+            print(f"Set ownership to {current_user}:www-data for {destination_path}")
         except subprocess.CalledProcessError:
             print(f"Warning: Could not set ownership for {destination_path}")
             print("You may need to run: sudo usermod -aG www-data $USER")
@@ -84,9 +86,6 @@ def save_to_local_storage(filepath, date=None):
         
         file_size = os.path.getsize(destination_path)
         print(f"Successfully saved to local storage: {destination_path} ({file_size} bytes)")
-        
-        # Trigger Nextcloud scan for the new file
-        trigger_nextcloud_scan(destination_path)
         
         return destination_path
         
@@ -157,11 +156,13 @@ def download_to_local_storage(cam, fname, output_filename, date=None, max_retrie
             if os.path.isfile(local_filepath):
                 # Set proper permissions and ownership for Nextcloud access
                 os.chmod(local_filepath, 0o644)
-                # Set ownership to www-data (Nextcloud user)
+                # Set ownership to current user and www-data group
                 import subprocess
                 try:
-                    subprocess.run(['sudo', 'chown', 'www-data:www-data', local_filepath], check=True)
-                    print(f"Set ownership to www-data for {local_filepath}")
+                    import pwd
+                    current_user = pwd.getpwuid(os.getuid()).pw_name
+                    subprocess.run(['sudo', 'chown', f'{current_user}:www-data', local_filepath], check=True)
+                    print(f"Set ownership to {current_user}:www-data for {local_filepath}")
                 except subprocess.CalledProcessError:
                     print(f"Warning: Could not set ownership for {local_filepath}")
                     print("You may need to run: sudo usermod -aG www-data $USER")
@@ -169,9 +170,6 @@ def download_to_local_storage(cam, fname, output_filename, date=None, max_retrie
                     print(f"Warning: sudo not available, ownership not set for {local_filepath}")
                 file_size = os.path.getsize(local_filepath)
                 print(f"Successfully downloaded to local storage: {local_filepath} ({file_size} bytes)")
-                
-                # Trigger Nextcloud scan for the new file
-                trigger_nextcloud_scan(local_filepath)
                 
                 return local_filepath
             else:
@@ -203,41 +201,4 @@ def download_to_local_storage(cam, fname, output_filename, date=None, max_retrie
     
     return None 
 
-def trigger_nextcloud_scan(filepath):
-    """
-    Trigger Nextcloud to scan for new files.
-    Uses the Nextcloud occ command to scan the file.
-    """
-    try:
-        # Get the relative path from the Nextcloud data directory
-        nextcloud_data_path = "/mnt/data/nextcloud/data"
-        if filepath.startswith(nextcloud_data_path):
-            relative_path = filepath[len(nextcloud_data_path):].lstrip('/')
-            # Extract the user and file path
-            parts = relative_path.split('/', 2)  # user/files/path
-            if len(parts) >= 3:
-                user = parts[0]
-                file_path = parts[2]  # Skip 'files' part
-                
-                # Run Nextcloud scan command
-                cmd = [
-                    'sudo', '-u', 'www-data', 
-                    'docker', 'exec', 'nextcloud-nextcloud-1',
-                    'php', 'occ', 'files:scan', '--path', f'{user}/files/{file_path}'
-                ]
-                
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-                if result.returncode == 0:
-                    print(f"Nextcloud scan triggered for {file_path}")
-                else:
-                    print(f"Nextcloud scan failed: {result.stderr}")
-            else:
-                print(f"Could not parse file path for Nextcloud scan: {filepath}")
-        else:
-            print(f"File not in Nextcloud data directory: {filepath}")
-            
-    except subprocess.TimeoutExpired:
-        print("Nextcloud scan timed out")
-    except Exception as e:
-        print(f"Failed to trigger Nextcloud scan: {e}")
-        print("You may need to manually refresh Nextcloud or run: sudo -u www-data docker exec nextcloud-nextcloud-1 php occ files:scan --all") 
+# Remove the trigger_nextcloud_scan function (lines 204-241) and any references to it in the file 
