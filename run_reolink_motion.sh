@@ -3,10 +3,10 @@
 # Usage: Add to crontab to run at desired times with redundancy
 
 # Set the working directory to the project root
-cd /home/baopham/reolink-automation
+cd /home/baopham/dev/reolink-automation
 
 # Lock file to prevent simultaneous runs
-LOCKFILE="/home/baopham/reolink_automation.lock"
+LOCKFILE="/home/baopham/dev/reolink_automation.lock"
 
 # Check if another instance is running
 if [ -f "$LOCKFILE" ]; then
