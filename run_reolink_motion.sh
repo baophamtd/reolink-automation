@@ -42,6 +42,6 @@ python main.py >> cron.log 2>&1
 
 # Trigger Nextcloud scan for just the e1 folder after all downloads are complete
 echo "=== Triggering Nextcloud scan for e1 folder at $(date) ===" >> cron.log
-sudo -u www-data docker exec nextcloud-nextcloud-1 php occ files:scan --path="bao/files/Photos/reolink-cams/e1" >> cron.log 2>&1
+docker exec nextcloud-nextcloud-1 php occ files:scan --path="bao/files/Photos/reolink-cams/e1" >> cron.log 2>&1
 
 echo "=== Script ended at $(date) ===" >> cron.log 
