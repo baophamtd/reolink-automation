@@ -37,8 +37,8 @@ echo "=== Script started at $(date) ===" >> cron.log
 # Activate the virtual environment
 source venv/bin/activate
 
-# Run the script and log output
-python main.py >> cron.log 2>&1
+# Run the script and log output with timeout (1 hour max)
+timeout 3600 python main.py >> cron.log 2>&1
 
 # Trigger Nextcloud scan for just the e1 folder after all downloads are complete
 echo "=== Triggering Nextcloud scan for e1 folder at $(date) ===" >> cron.log

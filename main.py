@@ -120,7 +120,14 @@ def download_motion_files(motions, max_retries=5, retry_delay=30):
                             pass
                     break  # Success, exit retry loop
                 else:
-                    raise Exception("Download to local storage failed")
+                    # Download failed, increment attempt and retry
+                    attempt += 1
+                    if attempt < max_retries:
+                        print(f"Download to local storage failed. Retrying {attempt}/{max_retries} in {retry_delay}s...")
+                        time.sleep(retry_delay)
+                    else:
+                        print(f"Failed to download {fname} after {max_retries} attempts.")
+                    continue
                     
             except requests.exceptions.ReadTimeout:
                 attempt += 1
