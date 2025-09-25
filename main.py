@@ -106,7 +106,7 @@ def download_motion_files(motions, max_retries=5, retry_delay=30):
                 # Configure session for streaming
                 session = requests.Session()
                 session.verify = False
-                session.timeout = (10, 120)  # 10s connect timeout, 120s read timeout
+                session.timeout = (30, 180)  # 30s connect timeout, 180s read timeout (3 minutes for large files)
                 cam._session = session
                 
                 # Download directly to local storage
@@ -123,8 +123,10 @@ def download_motion_files(motions, max_retries=5, retry_delay=30):
                     # Download failed, increment attempt and retry
                     attempt += 1
                     if attempt < max_retries:
-                        print(f"Download to local storage failed. Retrying {attempt}/{max_retries} in {retry_delay}s...")
-                        time.sleep(retry_delay)
+                        # Exponential backoff: 30s, 60s, 120s, 240s
+                        delay = retry_delay * (2 ** (attempt - 1))
+                        print(f"Download to local storage failed. Retrying {attempt}/{max_retries} in {delay}s...")
+                        time.sleep(delay)
                     else:
                         print(f"Failed to download {fname} after {max_retries} attempts.")
                     continue
@@ -137,10 +139,27 @@ def download_motion_files(motions, max_retries=5, retry_delay=30):
                     except:
                         pass
                 if attempt < max_retries:
-                    print(f"Timeout while downloading {fname}. Retrying {attempt}/{max_retries} in {retry_delay}s...")
-                    time.sleep(retry_delay)
+                    # Exponential backoff for timeouts
+                    delay = retry_delay * (2 ** (attempt - 1))
+                    print(f"Timeout while downloading {fname}. Retrying {attempt}/{max_retries} in {delay}s...")
+                    time.sleep(delay)
                 else:
                     print(f"Failed to download {fname} after {max_retries} attempts due to timeouts.")
+                    
+            except requests.exceptions.ConnectionError as e:
+                attempt += 1
+                if cam:
+                    try:
+                        cam.logout()
+                    except:
+                        pass
+                if attempt < max_retries:
+                    # Exponential backoff for connection errors
+                    delay = retry_delay * (2 ** (attempt - 1))
+                    print(f"Connection error while downloading {fname}: {e}. Retrying {attempt}/{max_retries} in {delay}s...")
+                    time.sleep(delay)
+                else:
+                    print(f"Failed to download {fname} after {max_retries} attempts due to connection errors.")
                     
             except requests.exceptions.RequestException as e:
                 attempt += 1
@@ -150,8 +169,10 @@ def download_motion_files(motions, max_retries=5, retry_delay=30):
                     except:
                         pass
                 if attempt < max_retries:
-                    print(f"Network error while downloading {fname}: {e}. Retrying {attempt}/{max_retries} in {retry_delay}s...")
-                    time.sleep(retry_delay)
+                    # Exponential backoff for network errors
+                    delay = retry_delay * (2 ** (attempt - 1))
+                    print(f"Network error while downloading {fname}: {e}. Retrying {attempt}/{max_retries} in {delay}s...")
+                    time.sleep(delay)
                 else:
                     print(f"Failed to download {fname} after {max_retries} attempts due to network errors.")
                     
@@ -163,8 +184,10 @@ def download_motion_files(motions, max_retries=5, retry_delay=30):
                     except:
                         pass
                 if attempt < max_retries:
-                    print(f"Error while downloading {fname}: {e}. Retrying {attempt}/{max_retries} in {retry_delay}s...")
-                    time.sleep(retry_delay)
+                    # Exponential backoff for unexpected errors
+                    delay = retry_delay * (2 ** (attempt - 1))
+                    print(f"Error while downloading {fname}: {e}. Retrying {attempt}/{max_retries} in {delay}s...")
+                    time.sleep(delay)
                 else:
                     print(f"Failed to download {fname} after {max_retries} attempts due to unexpected error.")
 
@@ -434,21 +457,6 @@ def filter_motions_by_time_windows(motions, target_date, time_windows):
     
     return filtered
 
-def s3_file_exists(bucket, key, aws_region=None):
-    s3 = boto3.client(
-        's3',
-        aws_access_key_id=AWS_ACCESS_KEY_ID,
-        aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
-        region_name=aws_region or AWS_DEFAULT_REGION
-    )
-    try:
-        s3.head_object(Bucket=bucket, Key=key)
-        return True
-    except ClientError as e:
-        if e.response['Error']['Code'] == '404':
-            return False
-        else:
-            raise
 
 if __name__ == "__main__":
     import argparse
