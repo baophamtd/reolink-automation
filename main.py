@@ -195,13 +195,19 @@ def download_motion_files(motions, max_retries=5, retry_delay=30):
 
 def send_telegram_message(message):
     async def _send():
-        try:
-            bot = Bot(token=TELEGRAM_BOT_TOKEN)
-            await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
-            print("Telegram notification sent.")
-        except Exception as e:
-            print(f"Failed to send Telegram message: {e}")
-    asyncio.run(_send())
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                bot = Bot(token=TELEGRAM_BOT_TOKEN)
+                await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+                print("Telegram notification sent.")
+                return True
+            except Exception as e:
+                print(f"Failed to send Telegram message (attempt {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(5)  # Wait 5 seconds before retry
+        return False
+    return asyncio.run(_send())
 
 def get_download_time_ranges():
     """Load and parse download time ranges from download_times.json for today."""
@@ -485,9 +491,13 @@ if __name__ == "__main__":
                 print(f"Found {count} motion files in desired windows for {start_date}.")
                 if count > 0:
                     send_telegram_message(f"📥 Processing {count} videos from {start_date}...")
-                download_motion_files(filtered)
+                    download_motion_files(filtered)
+                    send_telegram_message(f"✅ Reolink automation completed! Downloaded {count} videos.")
+                else:
+                    send_telegram_message(f"✅ Reolink automation completed! No new videos found in time windows.")
             else:
                 current_date = start_date
+                total_downloaded = 0
                 while current_date <= end_date:
                     print(f"\nProcessing {current_date}")
                     motions = get_all_motion_files_for_date(current_date)
@@ -496,8 +506,13 @@ if __name__ == "__main__":
                     print(f"Found {count} motion files in desired windows for {current_date}.")
                     if count > 0:
                         send_telegram_message(f"📥 Processing {count} videos from {current_date}...")
-                    download_motion_files(filtered)
+                        download_motion_files(filtered)
+                        total_downloaded += count
                     current_date += timedelta(days=1)
+                if total_downloaded > 0:
+                    send_telegram_message(f"✅ Reolink automation completed! Downloaded {total_downloaded} videos.")
+                else:
+                    send_telegram_message(f"✅ Reolink automation completed! No new videos found in time windows.")
         elif args.start or args.end:
             print("Error: You must specify BOTH --start and --end to use date range mode.")
             exit(1)
@@ -510,8 +525,10 @@ if __name__ == "__main__":
             print(f"Found {count} motion files in desired windows for today.")
             if count > 0:
                 send_telegram_message(f"📥 Processing {count} videos from today...")
-            download_motion_files(filtered)
-        send_telegram_message("✅ Reolink automation completed successfully!")
+                download_motion_files(filtered)
+                send_telegram_message(f"✅ Reolink automation completed! Downloaded {count} videos.")
+            else:
+                send_telegram_message(f"✅ Reolink automation completed! No new videos found in time windows.")
     except Exception as e:
         send_telegram_message(f"❌ Reolink automation failed: {e}")
         raise 

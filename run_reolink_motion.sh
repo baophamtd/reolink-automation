@@ -36,10 +36,18 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Clear the log and start fresh
-> cron.log
+# Rotate log if it gets too large (> 10MB)
+if [ -f cron.log ]; then
+    LOG_SIZE=$(stat -c%s cron.log 2>/dev/null || echo 0)
+    if [ $LOG_SIZE -gt 10485760 ]; then  # 10MB in bytes
+        mv cron.log cron.log.old
+        echo "$(date): Rotated large log file (${LOG_SIZE} bytes)" > cron.log
+    fi
+fi
 
-# Add timestamp
+# Append to log with timestamp (don't clear it)
+echo "" >> cron.log
+echo "============================================" >> cron.log
 echo "=== Script started at $(date) ===" >> cron.log
 
 # Activate the virtual environment
