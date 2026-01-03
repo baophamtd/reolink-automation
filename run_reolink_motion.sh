@@ -53,16 +53,12 @@ echo "=== Script started at $(date) ===" >> cron.log
 # Activate the virtual environment
 source venv/bin/activate
 
-# Run the script and log output with timeout (1 hour max)
-echo "=== Starting Python script with 1-hour timeout at $(date) ===" >> cron.log
-timeout 3600 python main.py >> cron.log 2>&1
+# Run the script (Python handles timeout logic internally)
+python main.py >> cron.log 2>&1
 EXIT_CODE=$?
 
-# Log timeout information
-if [ $EXIT_CODE -eq 124 ]; then
-    echo "=== Script timed out after 1 hour at $(date) ===" >> cron.log
-    echo "$(date): Script timed out after 1 hour. Check for stuck downloads or network issues." >> cron.log
-elif [ $EXIT_CODE -eq 0 ]; then
+# Log completion
+if [ $EXIT_CODE -eq 0 ]; then
     echo "=== Script completed successfully at $(date) ===" >> cron.log
 else
     echo "=== Script exited with code $EXIT_CODE at $(date) ===" >> cron.log

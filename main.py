@@ -11,6 +11,21 @@ import asyncio
 import time
 from local_storage import download_to_local_storage, local_file_exists
 
+# Configuration: Dynamic timeout and retry strategies (configurable via environment variables)
+TIMEOUT_BASE_SECONDS = int(os.getenv('REOLINK_TIMEOUT_BASE', 1800))  # 30 min base
+TIMEOUT_PER_FILE_SECONDS = int(os.getenv('REOLINK_TIMEOUT_PER_FILE', 120))  # 2 min per file
+TIMEOUT_MAX_SECONDS = int(os.getenv('REOLINK_TIMEOUT_MAX', 14400))  # 4 hours max
+MAX_RETRIES = int(os.getenv('REOLINK_MAX_RETRIES', 5))
+RETRY_DELAY_BASE = int(os.getenv('REOLINK_RETRY_DELAY_BASE', 30))  # Base delay in seconds
+
+def calculate_estimated_timeout(file_count):
+    """
+    Calculate estimated timeout needed based on number of files.
+    Returns timeout in seconds.
+    """
+    estimated = TIMEOUT_BASE_SECONDS + (file_count * TIMEOUT_PER_FILE_SECONDS)
+    return min(estimated, TIMEOUT_MAX_SECONDS)
+
 # WORKING DEBUG VERSION: Fetches and downloads all motion files for today (midnight to now) for all channels (0-3), 'main' stream only.
 # Use this as a reference point for a known good state.
 
@@ -57,37 +72,62 @@ def download_video(start_dt, end_dt):
         print(f"Download failed: {e}")
         return None
 
-def download_motion_files(motions, max_retries=5, retry_delay=30):
+def download_motion_files(motions, max_retries=None, retry_delay=None):
     """
     Download motion files and save them to local storage.
     Only processes channel 0 files.
     Uses increased timeouts and retry delays for better reliability.
+    Retry strategies are configurable via environment variables.
     """
-    for motion in motions:
+    # Use configurable values if not provided
+    if max_retries is None:
+        max_retries = MAX_RETRIES
+    if retry_delay is None:
+        retry_delay = RETRY_DELAY_BASE
+
+    total_files = len(motions)
+    files_to_download = sum(1 for m in motions if not local_file_exists(
+        m['start'].strftime("%Y-%m-%d %H-%M-%S") + "_ch0.mp4",
+        m['start'].date()
+    ))
+
+    # Log estimated timeout
+    if files_to_download > 0:
+        estimated_timeout = calculate_estimated_timeout(files_to_download)
+        timeout_minutes = estimated_timeout // 60
+        print(f"Estimated processing time: ~{timeout_minutes} minutes for {files_to_download} files to download")
+
+    processed_count = 0
+    downloaded_count = 0
+    skipped_count = 0
+
+    for idx, motion in enumerate(motions, 1):
         fname = motion['filename']
         mstart = motion['start']
         output_filename = mstart.strftime("%Y-%m-%d %H-%M-%S") + "_ch0.mp4"
         target_date = mstart.date()
-        
+
         if local_file_exists(output_filename, target_date):
-            print(f"File {output_filename} already exists in local storage, skipping download.")
+            skipped_count += 1
+            processed_count += 1
+            print(f"[{processed_count}/{total_files}] File {output_filename} already exists in local storage, skipping download.")
             continue
-        
-        print(f"Downloading {fname} as {output_filename}")
+
+        print(f"[{processed_count + 1}/{total_files}] Downloading {fname} as {output_filename}")
         attempt = 0
         while attempt < max_retries:
             cam = None
             try:
                 # Create a new camera connection with increased timeout
                 cam = Camera(
-                    REOLINK_HOST, 
-                    REOLINK_USER, 
-                    REOLINK_PASSWORD, 
-                    https=True, 
+                    REOLINK_HOST,
+                    REOLINK_USER,
+                    REOLINK_PASSWORD,
+                    https=True,
                     defer_login=True,
                     timeout=60  # Increase timeout to 60 seconds for large files
                 )
-                
+
                 # Try to login with retries
                 login_attempt = 0
                 while login_attempt < 3:  # 3 login retries
@@ -102,17 +142,19 @@ def download_motion_files(motions, max_retries=5, retry_delay=30):
                             time.sleep(5)  # Short delay between login attempts
                         else:
                             raise Exception(f"Failed to login after 3 attempts: {e}")
-                
+
                 # Configure session for streaming
                 session = requests.Session()
                 session.verify = False
                 session.timeout = (30, 180)  # 30s connect timeout, 180s read timeout (3 minutes for large files)
                 cam._session = session
-                
+
                 # Download directly to local storage
                 result = download_to_local_storage(cam, fname, output_filename, target_date, max_retries, retry_delay)
                 if result:
-                    print(f"Successfully downloaded to local storage: {result}")
+                    downloaded_count += 1
+                    processed_count += 1
+                    print(f"[{processed_count}/{total_files}] Successfully downloaded to local storage: {result}")
                     if cam:
                         try:
                             cam.logout()
@@ -129,8 +171,9 @@ def download_motion_files(motions, max_retries=5, retry_delay=30):
                         time.sleep(delay)
                     else:
                         print(f"Failed to download {fname} after {max_retries} attempts.")
+                        processed_count += 1
                     continue
-                    
+
             except requests.exceptions.ReadTimeout:
                 attempt += 1
                 if cam:
@@ -145,7 +188,9 @@ def download_motion_files(motions, max_retries=5, retry_delay=30):
                     time.sleep(delay)
                 else:
                     print(f"Failed to download {fname} after {max_retries} attempts due to timeouts.")
-                    
+                    processed_count += 1
+                    continue
+
             except requests.exceptions.ConnectionError as e:
                 attempt += 1
                 if cam:
@@ -160,7 +205,9 @@ def download_motion_files(motions, max_retries=5, retry_delay=30):
                     time.sleep(delay)
                 else:
                     print(f"Failed to download {fname} after {max_retries} attempts due to connection errors.")
-                    
+                    processed_count += 1
+                    continue
+
             except requests.exceptions.RequestException as e:
                 attempt += 1
                 if cam:
@@ -175,7 +222,9 @@ def download_motion_files(motions, max_retries=5, retry_delay=30):
                     time.sleep(delay)
                 else:
                     print(f"Failed to download {fname} after {max_retries} attempts due to network errors.")
-                    
+                    processed_count += 1
+                    continue
+
             except Exception as e:
                 attempt += 1
                 if cam:
@@ -190,8 +239,18 @@ def download_motion_files(motions, max_retries=5, retry_delay=30):
                     time.sleep(delay)
                 else:
                     print(f"Failed to download {fname} after {max_retries} attempts due to unexpected error.")
+                    processed_count += 1
+                    continue
 
-
+    # Print summary
+    print(f"\n=== Download Summary ===")
+    print(f"Total files: {total_files}")
+    print(f"Downloaded: {downloaded_count}")
+    print(f"Skipped (already exist): {skipped_count}")
+    print(f"Processed: {processed_count}/{total_files}")
+    if processed_count < total_files:
+        remaining = total_files - processed_count
+        print(f"Remaining: {remaining} files (will be processed on next run)")
 
 def send_telegram_message(message):
     async def _send():
@@ -379,7 +438,7 @@ def get_all_motion_files_for_date(target_date, max_retries=3, retry_delay=30):
     Only checks channel 0.
     """
     all_motions = []
-    
+
     for attempt in range(max_retries):
         try:
             # For today's date, add a small delay to allow for indexing
@@ -387,17 +446,17 @@ def get_all_motion_files_for_date(target_date, max_retries=3, retry_delay=30):
             if target_date == today:
                 print(f"Checking today's motions, adding delay for indexing...")
                 time.sleep(10)  # Brief delay for indexing
-            
+
             # Create a new camera connection for each attempt
             cam = Camera(REOLINK_HOST, REOLINK_USER, REOLINK_PASSWORD, https=True, defer_login=True)
             cam.login()
             print(f"Login success")
-            
+
             try:
                 # Convert date to datetime range
                 start_dt = datetime.combine(target_date, datetime.min.time())
                 end_dt = datetime.combine(target_date, datetime.max.time())
-                
+
                 # Only check channel 0
                 try:
                     channel_motions = cam.get_motion_files(
@@ -407,11 +466,11 @@ def get_all_motion_files_for_date(target_date, max_retries=3, retry_delay=30):
                         channel=0
                     )
                     print(f"Channel 0 motions: {channel_motions}")
-                    
+
                     # Add channel info to each motion
                     for motion in channel_motions:
                         motion['channel'] = 0
-                    
+
                     all_motions.extend(channel_motions)
                 except Exception as e:
                     print(f"Error fetching motions for channel 0: {e}")
@@ -421,22 +480,22 @@ def get_all_motion_files_for_date(target_date, max_retries=3, retry_delay=30):
                     cam.logout()
                 except:
                     pass
-            
+
             # If we found any motions, we're done
             if all_motions:
                 return all_motions
-                
+
             print(f"No motions found on attempt {attempt + 1}")
             if attempt < max_retries - 1:
                 print(f"Retrying in {retry_delay} seconds...")
                 time.sleep(retry_delay)
-                
+
         except Exception as e:
             print(f"Error fetching motions on attempt {attempt + 1}: {e}")
             if attempt < max_retries - 1:
                 print(f"Retrying in {retry_delay} seconds...")
                 time.sleep(retry_delay)
-    
+
     print(f"Failed to fetch motions after {max_retries} attempts")
     return all_motions
 
@@ -452,7 +511,7 @@ def filter_motions_by_time_windows(motions, target_date, time_windows):
         win_start = dt.combine(target_date, dt.strptime(tr['start'], '%H:%M').time())
         win_end = dt.combine(target_date, dt.strptime(tr['end'], '%H:%M').time())
         window_ranges.append((win_start, win_end))
-    
+
     filtered = []
     for motion in motions:
         mstart = motion['start']
@@ -460,7 +519,7 @@ def filter_motions_by_time_windows(motions, target_date, time_windows):
             if win_start <= mstart < win_end:
                 filtered.append(motion)
                 break
-    
+
     return filtered
 
 
@@ -531,4 +590,4 @@ if __name__ == "__main__":
                 send_telegram_message(f"✅ Reolink automation completed! No new videos found in time windows.")
     except Exception as e:
         send_telegram_message(f"❌ Reolink automation failed: {e}")
-        raise 
+        raise
