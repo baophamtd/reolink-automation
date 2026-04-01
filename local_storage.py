@@ -1,9 +1,51 @@
 import os
 from datetime import datetime
 import subprocess
+import pwd
+import grp
 
 # Local storage config - Nextcloud directory
 LOCAL_STORAGE_PATH = "/mnt/data/nextcloud/data/bao/files/Photos/reolink-cams/e1"
+
+
+def apply_nextcloud_permissions(path, is_directory=False):
+    """
+    Apply Nextcloud-friendly permissions and ownership without interactive sudo prompts.
+    - Directories: 775
+    - Files: 644
+    Tries non-sudo group assignment first, then sudo -n chown as fallback.
+    """
+    mode = 0o775 if is_directory else 0o644
+    os.chmod(path, mode)
+
+    current_user = pwd.getpwuid(os.getuid()).pw_name
+
+    # Try direct group ownership update first (works if user owns file and is in target group)
+    try:
+        www_data_gid = grp.getgrnam('www-data').gr_gid
+        os.chown(path, -1, www_data_gid)
+        print(f"Set group to www-data for {path}")
+        return
+    except Exception:
+        pass
+
+    # Fallback to chgrp (non-sudo)
+    try:
+        subprocess.run(['chgrp', 'www-data', path], check=True)
+        print(f"Set group to www-data for {path} via chgrp")
+        return
+    except Exception:
+        pass
+
+    # Final fallback: non-interactive sudo (never blocks waiting for password)
+    try:
+        subprocess.run(['sudo', '-n', 'chown', f'{current_user}:www-data', path], check=True)
+        print(f"Set ownership to {current_user}:www-data for {path}")
+    except subprocess.CalledProcessError:
+        print(f"Warning: Could not set ownership for {path} (sudo -n failed)")
+        print("Grant passwordless chown for this path or add your user to www-data and retry.")
+    except FileNotFoundError:
+        print(f"Warning: sudo not available, ownership not set for {path}")
 
 def ensure_storage_directory(date=None):
     """
@@ -20,20 +62,7 @@ def ensure_storage_directory(date=None):
     
     if not os.path.exists(storage_path):
         os.makedirs(storage_path, exist_ok=True)
-        # Set proper permissions and ownership for Nextcloud
-        os.chmod(storage_path, 0o775)  # Changed to 775 for group write access
-        # Set ownership to current user and www-data group
-        import subprocess
-        try:
-            import pwd
-            current_user = pwd.getpwuid(os.getuid()).pw_name
-            subprocess.run(['sudo', 'chown', f'{current_user}:www-data', storage_path], check=True)
-            print(f"Set ownership to {current_user}:www-data for directory {storage_path}")
-        except subprocess.CalledProcessError:
-            print(f"Warning: Could not set ownership for {storage_path}")
-            print("You may need to run: sudo usermod -aG www-data $USER")
-        except FileNotFoundError:
-            print(f"Warning: sudo not available, ownership not set for {storage_path}")
+        apply_nextcloud_permissions(storage_path, is_directory=True)
         print(f"Created storage directory: {storage_path}")
     
     return storage_path
@@ -69,20 +98,7 @@ def save_to_local_storage(filepath, date=None):
         import shutil
         shutil.move(filepath, destination_path)
         
-        # Set proper permissions and ownership for Nextcloud access
-        os.chmod(destination_path, 0o644)
-        # Set ownership to current user and www-data group
-        import subprocess
-        try:
-            import pwd
-            current_user = pwd.getpwuid(os.getuid()).pw_name
-            subprocess.run(['sudo', 'chown', f'{current_user}:www-data', destination_path], check=True)
-            print(f"Set ownership to {current_user}:www-data for {destination_path}")
-        except subprocess.CalledProcessError:
-            print(f"Warning: Could not set ownership for {destination_path}")
-            print("You may need to run: sudo usermod -aG www-data $USER")
-        except FileNotFoundError:
-            print(f"Warning: sudo not available, ownership not set for {destination_path}")
+        apply_nextcloud_permissions(destination_path, is_directory=False)
         
         file_size = os.path.getsize(destination_path)
         print(f"Successfully saved to local storage: {destination_path} ({file_size} bytes)")
@@ -154,20 +170,7 @@ def download_to_local_storage(cam, fname, output_filename, date=None, max_retrie
             
             # If we get here, download was successful
             if os.path.isfile(local_filepath):
-                # Set proper permissions and ownership for Nextcloud access
-                os.chmod(local_filepath, 0o644)
-                # Set ownership to current user and www-data group
-                import subprocess
-                try:
-                    import pwd
-                    current_user = pwd.getpwuid(os.getuid()).pw_name
-                    subprocess.run(['sudo', 'chown', f'{current_user}:www-data', local_filepath], check=True)
-                    print(f"Set ownership to {current_user}:www-data for {local_filepath}")
-                except subprocess.CalledProcessError:
-                    print(f"Warning: Could not set ownership for {local_filepath}")
-                    print("You may need to run: sudo usermod -aG www-data $USER")
-                except FileNotFoundError:
-                    print(f"Warning: sudo not available, ownership not set for {local_filepath}")
+                apply_nextcloud_permissions(local_filepath, is_directory=False)
                 file_size = os.path.getsize(local_filepath)
                 print(f"Successfully downloaded to local storage: {local_filepath} ({file_size} bytes)")
                 

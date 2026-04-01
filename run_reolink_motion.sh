@@ -5,6 +5,21 @@
 # Set the working directory to the project root
 cd /home/baopham/dev/reolink-automation
 
+# Load env vars for optional Telegram status pings
+set -a
+[ -f .env ] && source .env
+set +a
+
+send_status() {
+    local msg="$1"
+    if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+        return 0
+    fi
+    curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+        -d "chat_id=${TELEGRAM_CHAT_ID}" \
+        --data-urlencode "text=${msg}" >/dev/null 2>&1 || true
+}
+
 # Lock file to prevent simultaneous runs
 LOCKFILE="/home/baopham/dev/reolink_automation.lock"
 
@@ -49,6 +64,7 @@ fi
 echo "" >> cron.log
 echo "============================================" >> cron.log
 echo "=== Script started at $(date) ===" >> cron.log
+send_status "🎬 [CRON STARTED] Reolink cron job started at $(date '+%Y-%m-%d %H:%M:%S %Z')"
 
 # Activate the virtual environment
 source venv/bin/activate
@@ -67,5 +83,12 @@ fi
 # Trigger Nextcloud scan for just the e1 folder after all downloads are complete
 echo "=== Triggering Nextcloud scan for e1 folder at $(date) ===" >> cron.log
 docker exec nextcloud-nextcloud-1 php occ files:scan --path="bao/files/Photos/reolink-cams/e1" >> cron.log 2>&1
+SCAN_EXIT_CODE=$?
+
+if [ $EXIT_CODE -eq 0 ] && [ $SCAN_EXIT_CODE -eq 0 ]; then
+    send_status "✅ [CRON COMPLETED] Reolink cron job completed at $(date '+%Y-%m-%d %H:%M:%S %Z')"
+else
+    send_status "❌ [CRON FAILED] Reolink cron job ended at $(date '+%Y-%m-%d %H:%M:%S %Z') (main_exit=${EXIT_CODE}, scan_exit=${SCAN_EXIT_CODE})"
+fi
 
 echo "=== Script ended at $(date) ===" >> cron.log 
