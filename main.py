@@ -10,6 +10,7 @@ from telegram import Bot
 import asyncio
 import time
 import random
+import signal
 from local_storage import download_to_local_storage, local_file_exists, ensure_storage_directory, get_local_filepath, apply_nextcloud_permissions
 
 # Configuration: Dynamic timeout and retry strategies (configurable via environment variables)
@@ -72,6 +73,17 @@ TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# Job lifecycle state (for robust terminal status signaling)
+TERMINATION_SIGNAL = None
+JOB_RUN_ID = None
+TERMINAL_STATUS_SENT = False
+
+
+def _termination_handler(signum, frame):
+    global TERMINATION_SIGNAL
+    TERMINATION_SIGNAL = signum
+    raise KeyboardInterrupt(f"Termination signal received: {signum}")
 
 def download_video(start_dt, end_dt):
     """
@@ -187,6 +199,7 @@ def download_motion_files(motions, max_retries=None, retry_delay=None):
     processed_count = 0
     downloaded_count = 0
     skipped_count = 0
+    failed_count = 0
 
     for idx, motion in enumerate(motions, 1):
         fname = motion['filename']
@@ -217,6 +230,7 @@ def download_motion_files(motions, max_retries=None, retry_delay=None):
                 downloaded_count += 1
                 print(f"[{processed_count}/{total_files}] Successfully downloaded to local storage: {result}")
             else:
+                failed_count += 1
                 print(f"[{processed_count}/{total_files}] Failed to download {fname} via reolink-aio")
             continue
 
@@ -278,6 +292,7 @@ def download_motion_files(motions, max_retries=None, retry_delay=None):
                     else:
                         print(f"Failed to download {fname} after {max_retries} attempts.")
                         processed_count += 1
+                        failed_count += 1
                     continue
 
             except requests.exceptions.ReadTimeout:
@@ -295,6 +310,7 @@ def download_motion_files(motions, max_retries=None, retry_delay=None):
                 else:
                     print(f"Failed to download {fname} after {max_retries} attempts due to timeouts.")
                     processed_count += 1
+                    failed_count += 1
                     continue
 
             except requests.exceptions.ConnectionError as e:
@@ -312,6 +328,7 @@ def download_motion_files(motions, max_retries=None, retry_delay=None):
                 else:
                     print(f"Failed to download {fname} after {max_retries} attempts due to connection errors.")
                     processed_count += 1
+                    failed_count += 1
                     continue
 
             except requests.exceptions.RequestException as e:
@@ -329,6 +346,7 @@ def download_motion_files(motions, max_retries=None, retry_delay=None):
                 else:
                     print(f"Failed to download {fname} after {max_retries} attempts due to network errors.")
                     processed_count += 1
+                    failed_count += 1
                     continue
 
             except Exception as e:
@@ -346,6 +364,7 @@ def download_motion_files(motions, max_retries=None, retry_delay=None):
                 else:
                     print(f"Failed to download {fname} after {max_retries} attempts due to unexpected error.")
                     processed_count += 1
+                    failed_count += 1
                     continue
 
     # Print summary
@@ -353,6 +372,7 @@ def download_motion_files(motions, max_retries=None, retry_delay=None):
     print(f"Total files: {total_files}")
     print(f"Downloaded: {downloaded_count}")
     print(f"Skipped (already exist): {skipped_count}")
+    print(f"Failed: {failed_count}")
     print(f"Processed: {processed_count}/{total_files}")
     if processed_count < total_files:
         remaining = total_files - processed_count
@@ -362,6 +382,7 @@ def download_motion_files(motions, max_retries=None, retry_delay=None):
         "total_files": total_files,
         "downloaded_count": downloaded_count,
         "skipped_count": skipped_count,
+        "failed_count": failed_count,
         "processed_count": processed_count,
     }
 
@@ -380,6 +401,12 @@ def send_telegram_message(message):
                     await asyncio.sleep(5)  # Wait 5 seconds before retry
         return False
     return asyncio.run(_send())
+
+
+def send_terminal_status(message):
+    global TERMINAL_STATUS_SENT
+    TERMINAL_STATUS_SENT = True
+    return send_telegram_message(message)
 
 def get_download_time_ranges():
     """Load and parse download time ranges from download_times.json for today."""
@@ -681,9 +708,18 @@ if __name__ == "__main__":
     with open('download_times.json', 'r') as f:
         time_windows = json.load(f)
 
+    JOB_RUN_ID = dt.now().strftime("%Y%m%d-%H%M%S")
+    TERMINAL_STATUS_SENT = False
+
+    # Register termination handlers so interrupted runs still send terminal status.
+    signal.signal(signal.SIGINT, _termination_handler)
+    signal.signal(signal.SIGTERM, _termination_handler)
+    signal.signal(signal.SIGHUP, _termination_handler)
+    signal.signal(signal.SIGQUIT, _termination_handler)
+
     try:
         print(f"Reolink client mode: {REOLINK_CLIENT}")
-        job_run_id = dt.now().strftime("%Y%m%d-%H%M%S")
+        job_run_id = JOB_RUN_ID
         # Send start notification
         send_telegram_message(f"🎥 [STARTED] Reolink video processing (job={job_run_id}, client={REOLINK_CLIENT})")
 
@@ -699,18 +735,19 @@ if __name__ == "__main__":
                 if count > 0:
                     send_telegram_message(f"📥 Processing {count} videos from {start_date}...")
                     summary = download_motion_files(filtered)
-                    send_telegram_message(
-                        f"✅ [COMPLETED] job={job_run_id} date={start_date} total={summary['total_files']} downloaded={summary['downloaded_count']} skipped={summary['skipped_count']} processed={summary['processed_count']}"
+                    send_terminal_status(
+                        f"✅ [COMPLETED] job={job_run_id} date={start_date} total={summary['total_files']} downloaded={summary['downloaded_count']} skipped={summary['skipped_count']} failed={summary['failed_count']} processed={summary['processed_count']}"
                     )
                 else:
                     if fetch_error:
-                        send_telegram_message(f"❌ [FAILED] job={job_run_id} date={start_date} fetch_error={fetch_error}")
+                        send_terminal_status(f"❌ [FAILED] job={job_run_id} date={start_date} fetch_error={fetch_error}")
                         raise RuntimeError(f"Motion fetch failed for {start_date}: {fetch_error}")
-                    send_telegram_message(f"✅ [COMPLETED] job={job_run_id} date={start_date} no_new_videos_in_time_windows")
+                    send_terminal_status(f"✅ [COMPLETED] job={job_run_id} date={start_date} no_new_videos_in_time_windows")
             else:
                 current_date = start_date
                 total_downloaded = 0
                 total_skipped = 0
+                total_failed = 0
                 total_processed = 0
                 failed_dates = []
                 while current_date <= end_date:
@@ -724,23 +761,24 @@ if __name__ == "__main__":
                         summary = download_motion_files(filtered)
                         total_downloaded += summary['downloaded_count']
                         total_skipped += summary['skipped_count']
+                        total_failed += summary['failed_count']
                         total_processed += summary['processed_count']
                     elif fetch_error:
                         failed_dates.append(f"{current_date}: {fetch_error}")
                     current_date += timedelta(days=1)
 
                 if failed_dates:
-                    send_telegram_message(
+                    send_terminal_status(
                         f"❌ [FAILED] job={job_run_id} range={start_date}->{end_date} errors={'; '.join(failed_dates)}"
                     )
                     raise RuntimeError(f"Fetch failures in range run: {'; '.join(failed_dates)}")
 
                 if total_processed > 0:
-                    send_telegram_message(
-                        f"✅ [COMPLETED] job={job_run_id} range={start_date}->{end_date} downloaded={total_downloaded} skipped={total_skipped} processed={total_processed}"
+                    send_terminal_status(
+                        f"✅ [COMPLETED] job={job_run_id} range={start_date}->{end_date} downloaded={total_downloaded} skipped={total_skipped} failed={total_failed} processed={total_processed}"
                     )
                 else:
-                    send_telegram_message(
+                    send_terminal_status(
                         f"✅ [COMPLETED] job={job_run_id} range={start_date}->{end_date} no_new_videos_in_time_windows"
                     )
         elif args.start or args.end:
@@ -756,14 +794,22 @@ if __name__ == "__main__":
             if count > 0:
                 send_telegram_message(f"📥 Processing {count} videos from today...")
                 summary = download_motion_files(filtered)
-                send_telegram_message(
-                    f"✅ [COMPLETED] job={job_run_id} date={today} total={summary['total_files']} downloaded={summary['downloaded_count']} skipped={summary['skipped_count']} processed={summary['processed_count']}"
+                send_terminal_status(
+                    f"✅ [COMPLETED] job={job_run_id} date={today} total={summary['total_files']} downloaded={summary['downloaded_count']} skipped={summary['skipped_count']} failed={summary['failed_count']} processed={summary['processed_count']}"
                 )
             else:
                 if fetch_error:
-                    send_telegram_message(f"❌ [FAILED] job={job_run_id} date={today} fetch_error={fetch_error}")
+                    send_terminal_status(f"❌ [FAILED] job={job_run_id} date={today} fetch_error={fetch_error}")
                     raise RuntimeError(f"Motion fetch failed for {today}: {fetch_error}")
-                send_telegram_message(f"✅ [COMPLETED] job={job_run_id} date={today} no_new_videos_in_time_windows")
-    except Exception as e:
-        send_telegram_message(f"❌ [FAILED] Reolink automation job failed: {e}")
+                send_terminal_status(f"✅ [COMPLETED] job={job_run_id} date={today} no_new_videos_in_time_windows")
+    except KeyboardInterrupt as e:
+        signal_info = f"signal={TERMINATION_SIGNAL}" if TERMINATION_SIGNAL else "signal=keyboard_interrupt"
+        send_terminal_status(f"⚠ [ABORTED] job={JOB_RUN_ID} {signal_info} reason={e}")
         raise
+    except Exception as e:
+        send_terminal_status(f"❌ [FAILED] Reolink automation job failed: {e}")
+        raise
+    finally:
+        # If the process exits without an explicit terminal status, send one to avoid ghost runs.
+        if JOB_RUN_ID and not TERMINAL_STATUS_SENT:
+            send_terminal_status(f"⚠ [ABORTED] job={JOB_RUN_ID} reason=process_exited_without_terminal_status")
